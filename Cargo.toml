@@ -1,0 +1,53 @@
+[package]
+name = "yasa"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axum = "0.8"
+dotenvy = "0.15"
+hex = "0.4"
+hmac = "0.12"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tower = "0.5"
+uuid = { version = "1", features = ["serde"] }
+vercel_runtime = { version = "2.4", features = ["axum"] }
+
+[lib]
+path = "src/lib.rs"
+
+# Vercel builds every [[bin]] under api/ as a function. The router lives in the lib, so the
+# Vercel entry (api/yasa.rs) and the local server (src/bin/dev.rs) serve exactly the same app.
+[[bin]]
+name = "yasa"
+path = "api/yasa.rs"
+
+[[bin]]
+name = "dev"
+path = "src/bin/dev.rs"
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "invite"
+path = "src/bin/invite.rs"
+
+[[bin]]
+name = "poc"
+path = "src/bin/poc.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3

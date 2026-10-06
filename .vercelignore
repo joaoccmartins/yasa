@@ -1,0 +1,12 @@
+# The CLI uploads the folder using this file instead of .gitignore, so secrets are repeated here.
+.env
+.env.*
+!.env.example
+siie_client.rs
+web/node_modules
+web/dist
+# Build output, except release binaries for prebuilt deploys
+target/**
+!target/release
+!target/x86_64-unknown-linux-gnu/release/**
+!target/aarch64-unknown-linux-gnu/release/**

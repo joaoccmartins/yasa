@@ -16,9 +16,10 @@ export async function api(path: string, init?: RequestInit): Promise<unknown> {
     headers: { 'content-type': 'application/json', ...init?.headers },
   })
   if (!res.ok) {
-    // Backend errors are {"error": "..."}; fall back to the status text for anything else.
+    // Backend errors are {"error": "..."}. Anything else (e.g. a platform error page) gets the
+    // status code, since HTTP/2 responses carry no status text.
     const body = await res.json().catch(() => ({}))
-    throw new ApiError(res.status, body.error ?? res.statusText)
+    throw new ApiError(res.status, body.error ?? (res.statusText || `Erro HTTP ${res.status}.`))
   }
   return res.status === 204 ? undefined : res.json()
 }

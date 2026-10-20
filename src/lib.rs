@@ -1,10 +1,11 @@
 //! YASA backend: one axum router, served on Vercel (api/yasa.rs) or locally (src/bin/dev.rs).
 
+pub mod access;
 pub mod admin;
 pub mod auth;
 pub mod siie;
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use axum::{
     Router,
@@ -16,6 +17,10 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 // Serverless: every warm instance holds its own pool, so keep it small. Neon's pooled URL
 // (PgBouncer) multiplexes these onto the real Postgres connections.
 const MAX_DB_CONNECTIONS: u32 = 3;
+// How long an access read from SIIE stays valid, in days, unless ACCESS_VALIDITY_DAYS says
+// otherwise. A login after that re-reads it (in the background).
+const DEFAULT_ACCESS_VALIDITY_DAYS: i32 = 7;
+const MAX_ACCESS_VALIDITY_DAYS: i32 = 365;
 // HMAC-SHA256 key: 32 bytes is the full hash width, shorter would weaken it.
 const MIN_LOGIN_KEY_BYTES: usize = 32;
 
@@ -26,6 +31,8 @@ pub struct AppState {
     pub login_key_secret: Arc<SecretSlice<u8>>,
     /// false only for the local http server, where browsers would drop a Secure cookie on some setups.
     pub secure_cookies: bool,
+    /// Days an access read from SIIE stays valid (ACCESS_VALIDITY_DAYS).
+    pub access_validity_days: i32,
 }
 
 impl AppState {
@@ -47,11 +54,39 @@ impl AppState {
             ));
         }
 
+        // Optional: unset means the default; anything else must be a whole number of days.
+        let access_validity_days = match std::env::var("ACCESS_VALIDITY_DAYS") {
+            Err(_) => DEFAULT_ACCESS_VALIDITY_DAYS,
+            Ok(v) => v
+                .trim()
+                .parse()
+                .ok()
+                .filter(|d| (1..=MAX_ACCESS_VALIDITY_DAYS).contains(d))
+                .ok_or(format!(
+                    "ACCESS_VALIDITY_DAYS must be a number of days from 1 to {MAX_ACCESS_VALIDITY_DAYS}"
+                ))?,
+        };
+
         Ok(Self {
             db,
             login_key_secret: Arc::new(key.into()),
             secure_cookies,
+            access_validity_days,
         })
+    }
+}
+
+/// Runs `fut` after the response is sent. On Vercel, `wait_until` keeps the invocation alive
+/// until it finishes (bounded by the function's maxDuration); locally, a plain tokio task.
+pub fn in_background<F>(vercel: Option<&vercel_runtime::AppState>, fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    match vercel {
+        Some(v) => v.wait_until(fut),
+        None => {
+            tokio::spawn(fut);
+        }
     }
 }
 
@@ -63,5 +98,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/admin/accounts", get(admin::list).post(admin::invite))
         .route("/api/admin/accounts/{id}", patch(admin::update))
+        .route("/api/admin/events", get(admin::events))
         .with_state(state)
 }

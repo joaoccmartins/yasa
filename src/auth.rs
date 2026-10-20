@@ -1,15 +1,18 @@
 //! Login and sessions. SIIE is the identity provider: YASA has no passwords of its own.
 //!
 //! Login order (see README "Access model"):
+//! 0. Too many recent SIIE failures for this identifier or IP: refused before SIIE is contacted,
+//!    so YASA can't be used to guess SIIE passwords.
 //! 1. SIIE checks the password. Someone removed from SIIE fails here.
 //! 2. HMAC(identifier) must match an active, invited account. SIIE goes first so this endpoint
 //!    can't be used to probe which NIFs are invited. Nothing is stored about uninvited people.
-//! 3. The members grid is read with the person's SIIE session: the agrupamentos in it become
-//!    their access, and how widely those spread gives their access level.
+//! 3. Access: if never read or older than ACCESS_VALIDITY_DAYS, the members grid is read in the
+//!    background with this same SIIE session (see access.rs). The login doesn't wait for it.
 //! 4. A session starts. The cookie ends with the browser; the DB caps it at SESSION_HOURS.
+//!    The login is recorded in account_events.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{FromRequestParts, State},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
@@ -23,6 +26,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    access::{self, Claim},
+    admin::log_event,
+    in_background,
     siie::{self, SiieError},
 };
 
@@ -30,6 +36,12 @@ const COOKIE_NAME: &str = "yasa_session";
 // Server-side cap. The cookie has no Max-Age, so it normally dies with the browser first.
 const SESSION_HOURS: i32 = 12;
 const TOKEN_BYTES: usize = 32;
+// Login limits: failed SIIE logins counted over a sliding window, per identifier and per IP.
+// Per IP is looser, since a scout group may share one connection.
+const FAILURE_WINDOW_MINUTES: i32 = 15;
+const MAX_FAILURES_PER_IDENTIFIER: i64 = 5;
+const MAX_FAILURES_PER_IP: i64 = 20;
+const TOO_MANY: &str = "Demasiadas tentativas falhadas. Tente novamente dentro de 15 minutos.";
 const NO_ACCESS: &str = "O início de sessão no SIIE funcionou, mas ainda não lhe foi dado acesso ao YASA. Peça acesso a um administrador.";
 
 /// JSON error body: `{"error": "..."}`. Messages never contain credentials.
@@ -79,6 +91,22 @@ impl Method {
             Method::Siie => "nin_key",
         }
     }
+
+    /// The identifier the other login option uses.
+    pub fn other(self) -> Self {
+        match self {
+            Method::Loja => Method::Siie,
+            Method::Siie => Method::Loja,
+        }
+    }
+
+    /// For event details: which kind of identifier, never its value.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Method::Loja => "nif",
+            Method::Siie => "nin",
+        }
+    }
 }
 
 /// Login body. No `Debug` on purpose: it holds the password.
@@ -92,22 +120,45 @@ pub struct LoginBody {
 /// POST /api/auth/login
 pub async fn login(
     State(s): State<AppState>,
+    // Present on Vercel (see api/yasa.rs): lets the access read outlive the response.
+    vercel: Option<Extension<vercel_runtime::AppState>>,
+    headers: HeaderMap,
     Json(b): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
-    if b.identifier.trim().is_empty() {
+    let id = siie::normalize_identifier(&b.identifier);
+    if id.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Indique o NIF/NIN."));
     }
-    // Computed before `identifier` moves into the credentials (dropped once SIIE answers).
-    let key = login_key(s.login_key_secret.expose_secret(), &b.identifier);
+    let secret = s.login_key_secret.expose_secret();
+    let key = login_key(secret, &id);
 
-    // 1. SIIE decides whether the password is right.
+    // 0. Login limits. Keys are HMACs, so the table holds no identifiers or IPs.
+    let id_limit = keyed_hash(secret, &format!("fail-id:{id}"));
+    let ip_limit = client_ip(&headers).map(|ip| keyed_hash(secret, &format!("fail-ip:{ip}")));
+    check_login_limits(&s, &id_limit, ip_limit.as_deref()).await?;
+
+    // 1. SIIE decides whether the password is right. Only its "no" counts as a failure; a SIIE
+    //    outage must not lock people out.
     let client = siie::new_client().map_err(siie_error)?;
     let creds = siie::Credentials {
         nif: b.identifier.trim().to_owned(),
         password: b.password,
         loja_escutista: matches!(b.method, Method::Loja),
     };
-    let siie_login = siie::login(&client, creds).await.map_err(siie_error)?;
+    let siie_login = match siie::login(&client, creds).await {
+        Ok(l) => l,
+        Err(e @ SiieError::LoginRejected(_)) => {
+            record_login_failure(&s, &id_limit, ip_limit.as_deref()).await?;
+            return Err(siie_error(e));
+        }
+        Err(e) => return Err(siie_error(e)),
+    };
+    // A correct password clears this identifier's failures (the IP's stay).
+    sqlx::query("delete from login_failures where key = $1")
+        .bind(&id_limit)
+        .execute(&s.db)
+        .await
+        .map_err(db_error)?;
 
     // 2. Invite list. Not invited and disabled get the same answer.
     let col = b.method.key_column();
@@ -122,34 +173,27 @@ pub async fn login(
         return Err(ApiError::new(StatusCode::FORBIDDEN, NO_ACCESS));
     };
 
-    // 3. Access = what SIIE shows this person today. The SIIE session ends right after.
-    let vis = siie::visibility(&client, &siie_login.token)
+    // 3. Access: re-read in the background only if never read or expired. The SIIE client and
+    //    token move into that task; otherwise they are dropped at the end of this request.
+    let claim = access::claim_refresh(&s.db, account_id, s.access_validity_days)
         .await
-        .map_err(siie_error)?;
-    drop(siie_login);
-    drop(client);
-    let level = vis.level();
-    // Sets -> Vecs for binding as text[] (already sorted, since they are BTreeSets).
-    let agrupamentos: Vec<String> = vis.agrupamentos.into_iter().collect();
-    let nucleos: Vec<String> = vis.nucleos.into_iter().collect();
-    let regioes: Vec<String> = vis.regioes.into_iter().collect();
+        .map_err(db_error)?;
+    if let Claim::Started = claim {
+        let own = siie::OwnId {
+            loja_escutista: matches!(b.method, Method::Loja),
+            identifier: id,
+        };
+        let task = access::read_access(s.clone(), account_id, b.method, client, siie_login, own);
+        in_background(vercel.as_ref().map(|Extension(v)| v), task);
+    }
 
-    // 4. Access refresh + session in one transaction, so a half-applied login can't exist.
+    // 4. Session + login event in one transaction, then answer right away.
     let token = new_token();
     let mut tx = s.db.begin().await.map_err(db_error)?;
-    sqlx::query(
-        "update accounts set last_login_at = now(), access_refreshed_at = now(),
-                access_level = $2, agrupamentos = $3, nucleos = $4, regioes = $5
-         where id = $1",
-    )
-    .bind(account_id)
-    .bind(level.as_str())
-    .bind(&agrupamentos)
-    .bind(&nucleos)
-    .bind(&regioes)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_error)?;
+    let detail = json!({ "access": claim.as_str() });
+    log_event(&mut *tx, Some(account_id), account_id, "login", detail)
+        .await
+        .map_err(db_error)?;
     sqlx::query(
         "insert into sessions (token_hash, account_id, expires_at)
          values ($1, $2, now() + make_interval(hours => $3))",
@@ -171,29 +215,73 @@ pub async fn login(
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response())
 }
 
-/// GET /api/auth/me: who is logged in, or 401 (the frontend then shows only the login page).
-pub async fn me(State(s): State<AppState>, acc: CurrentAccount) -> Result<Response, ApiError> {
-    let (access_level, agrupamentos, nucleos, regioes): (
-        String,
-        Vec<String>,
-        Vec<String>,
-        Vec<String>,
-    ) = sqlx::query_as(
-        "select access_level, agrupamentos, nucleos, regioes from accounts where id = $1",
+/// 429 if this identifier or IP has too many recent SIIE failures.
+async fn check_login_limits(
+    s: &AppState,
+    id_limit: &[u8],
+    ip_limit: Option<&[u8]>,
+) -> Result<(), ApiError> {
+    let (by_id, by_ip): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where key = $1), count(*) filter (where key = $2)
+         from login_failures
+         where key in ($1, $2) and at > now() - make_interval(mins => $3)",
     )
-    .bind(acc.id)
+    .bind(id_limit)
+    .bind(ip_limit)
+    .bind(FAILURE_WINDOW_MINUTES)
     .fetch_one(&s.db)
     .await
     .map_err(db_error)?;
-    // Full lists: codes of organisational units only, no personal data.
+    if by_id >= MAX_FAILURES_PER_IDENTIFIER || by_ip >= MAX_FAILURES_PER_IP {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, TOO_MANY));
+    }
+    Ok(())
+}
+
+/// One SIIE rejection: a row per key, plus cleanup of rows past the window.
+async fn record_login_failure(
+    s: &AppState,
+    id_limit: &[u8],
+    ip_limit: Option<&[u8]>,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "with old as (
+            delete from login_failures where at < now() - make_interval(mins => $3)
+         )
+         insert into login_failures (key) select k from unnest(array[$1, $2]) as k where k is not null",
+    )
+    .bind(id_limit)
+    .bind(ip_limit)
+    .bind(FAILURE_WINDOW_MINUTES)
+    .execute(&s.db)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+/// The caller's IP. On Vercel, x-forwarded-for is set by the platform (client-sent values are
+/// overwritten), so its first entry is the real client. Locally there is none.
+fn client_ip(headers: &HeaderMap) -> Option<String> {
+    let first = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()?
+        .trim();
+    (!first.is_empty()).then(|| first.to_owned())
+}
+
+/// GET /api/auth/me: who is logged in and their access, or 401 (the frontend then shows only
+/// the login page). The Painel polls this while the access is being read.
+pub async fn me(State(s): State<AppState>, acc: CurrentAccount) -> Result<Response, ApiError> {
+    let access = access::summary(&s, acc.id).await.map_err(db_error)?;
     let body = json!({
         "accountId": acc.id,
         "label": acc.label,
         "role": acc.role,
-        "accessLevel": access_level,
-        "agrupamentos": agrupamentos,
-        "nucleos": nucleos,
-        "regioes": regioes,
+        "access": access,
     });
     Ok(Json(body).into_response())
 }
@@ -261,13 +349,14 @@ impl FromRequestParts<AppState> for AdminAccount {
 /// without the secret (env vars only, not the DB) the key can't be linked back to a NIF/NIN.
 /// Normalized = no whitespace, uppercase, so "123 456 789" and "123456789" match.
 pub fn login_key(secret: &[u8], identifier: &str) -> Vec<u8> {
-    let normalized: String = identifier
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_uppercase();
+    keyed_hash(secret, &siie::normalize_identifier(identifier))
+}
+
+/// HMAC-SHA256(secret, text). Callers prefix the text by purpose ("fail-ip:..."), so hashes for
+/// different uses can't be matched against each other.
+fn keyed_hash(secret: &[u8], text: &str) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(normalized.as_bytes());
+    mac.update(text.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
 
@@ -322,6 +411,27 @@ mod tests {
         let a = login_key(&[1; 32], "123456789");
         assert_eq!(a, login_key(&[1; 32], " 123 456 789 "));
         assert_eq!(login_key(&[1; 32], "ab12"), login_key(&[1; 32], "AB12"));
+    }
+
+    #[test]
+    fn login_limit_keys_differ_from_login_key() {
+        let secret = [1; 32];
+        let id = "123456789";
+        assert_ne!(
+            login_key(&secret, id),
+            keyed_hash(&secret, &format!("fail-id:{id}"))
+        );
+    }
+
+    #[test]
+    fn client_ip_takes_first_forwarded_entry() {
+        let mut h = HeaderMap::new();
+        assert_eq!(client_ip(&h), None);
+        h.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
+        );
+        assert_eq!(client_ip(&h).as_deref(), Some("203.0.113.7"));
     }
 
     #[test]

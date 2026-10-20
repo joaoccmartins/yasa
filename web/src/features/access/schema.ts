@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { accessLevelSchema, type LoginMethod } from '../auth/schema'
+import { accessLevelSchema, accessStatusSchema, type LoginMethod } from '../auth/schema'
 
 export const accountSchema = z.object({
   id: z.string(),
@@ -12,7 +12,10 @@ export const accountSchema = z.object({
   createdAt: z.number(),
   lastLoginAt: z.number().nullable(),
   accessLevel: accessLevelSchema,
-  // Counts only; the lists themselves are in /auth/me for the account's own session.
+  accessStatus: accessStatusSchema,
+  // Unix seconds; null until the first successful read.
+  accessValidUntil: z.number().nullable(),
+  // What the grants cover. The lists themselves are in /auth/me, for the account's own session.
   agrupamentos: z.number(),
   nucleos: z.number(),
   regioes: z.number(),
@@ -28,3 +31,27 @@ export type InviteInput = {
   label: string
   role: Role
 }
+
+export const eventSchema = z.object({
+  id: z.number(),
+  // Unix seconds.
+  at: z.number(),
+  action: z.enum([
+    'invited',
+    'login',
+    'enabled',
+    'disabled',
+    'role_changed',
+    'identifier_linked',
+    'access_refreshed',
+    'access_failed',
+  ]),
+  // Small facts per action (role names, counts); read defensively in the event log.
+  detail: z.record(z.string(), z.unknown()),
+  accountId: z.string(),
+  accountLabel: z.string(),
+  // null = command line or the system.
+  actorLabel: z.string().nullable(),
+})
+export const eventListSchema = z.array(eventSchema)
+export type AccountEvent = z.infer<typeof eventSchema>

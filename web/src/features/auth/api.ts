@@ -4,6 +4,8 @@ import { meSchema, type LoginInput, type Me } from './schema'
 
 export const authKeys = { me: ['auth', 'me'] as const }
 
+const ACCESS_POLL_MS = 3000
+
 /** The logged-in user, or null when logged out (401 is an answer here, not an error). */
 export function useMe() {
   return useQuery({
@@ -18,6 +20,9 @@ export function useMe() {
     },
     retry: false,
     staleTime: Infinity,
+    // While the access is being read in the background, check again every few seconds.
+    refetchInterval: (query) =>
+      query.state.data?.access.status === 'running' ? ACCESS_POLL_MS : false,
   })
 }
 

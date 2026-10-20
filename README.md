@@ -30,52 +30,96 @@ login is not enough: an admin has to invite you.
 `POST /api/auth/login` `{identifier, password, method: "loja" | "siie"}`:
 
 ```
+0. login limits                       too many recent SIIE failures -> 429, SIIE not contacted
 1. SIIE login                         fails -> 401 (also covers "removed from SIIE")
 2. HMAC(identifier) -> account        by nif_key (Loja) or nin_key (SIIE)
                                       none / disabled -> 403, and nothing is stored
-3. read the members grid (all pages)  fails -> 502 (can't verify access = no access)
-   -> agrupamentos + access_level     replace them on the account
-4. session                            cookie ends with the browser, DB caps it at 12h
+3. access never read, or expired?      claim the read and run it in the background
+                                      (the login does not wait for it, see "Access" below)
+4. session + "login" event            cookie ends with the browser, DB caps it at 12h; 204 now
 ```
 
 SIIE is checked before the invite list, so the endpoint can't be used to probe which NIFs are
-invited. The SIIE password and token are dropped at the end of the request.
+invited. The SIIE password is dropped as soon as SIIE answers; the SIIE session (cookies + token)
+lives only in memory, until the background read ends or, if none is needed, the request ends.
+
+**Login limits.** Each SIIE rejection is recorded in `login_failures` under an HMAC of the
+identifier and an HMAC of the client IP (`x-forwarded-for`, which Vercel sets). 5 failures for one
+identifier, or 20 from one IP, within 15 minutes return 429 without contacting SIIE, so YASA can't
+be used to guess SIIE passwords. A correct password clears that identifier's failures. SIIE outages
+(502) don't count. Limits are constants at the top of [src/auth.rs](src/auth.rs).
+
+**NIF and NIN, one account.** If the person appears in their own grid (a row whose `nif` or `nin`
+equals what they typed), the other identifier is hashed onto their account. From then on both
+login options reach it. It's skipped if another account already uses that identifier.
 
 | What happens | Effect in YASA |
 | --- | --- |
 | Removed from SIIE | The next login fails at step 1 |
-| SIIE shows fewer agrupamentos | The next login shrinks `agrupamentos` (and maybe the level) |
+| SIIE shows fewer agrupamentos | The first login after the access expires re-reads it and shrinks the grants |
 | An admin disables the account | Its sessions are deleted at once |
+| Too many wrong passwords | 429 for 15 minutes, per identifier and per IP |
 | Browser closes | The cookie is gone (server cap: 12h) |
 
-Each account's access is two fields, both refreshed from SIIE at every login:
+### Access
 
-- `agrupamentos` (`text[]`): the agrupamento numbers in the grid SIIE shows them. Access is cut on
-  this list. The data phase must filter every query with `agrupamento = any(<account's list>)`.
-- `access_level`: `none`, `agrupamento`, `nucleo`, `regiao` or `nacional`. SIIE doesn't expose the
-  role, so it is read from how widely the visible rows spread (`siie::Visibility::level`),
-  checked in this order:
-  1. more than 1 região: nacional
-  2. more than 1 núcleo: regiao
-  3. exactly 1 agrupamento: agrupamento (before núcleo, since one agrupamento also means one núcleo)
-  4. 1 núcleo, or several agrupamentos: nucleo
-  5. otherwise: none
+**Background read.** Reading the whole SIIE grid takes seconds (minutes for wide access), so the
+login doesn't wait for it. On Vercel, `vercel_runtime`'s `wait_until` keeps the function running
+after the response until the read finishes (bounded by maxDuration, 300 s on Hobby). The crate's
+axum adapter drops the state that carries it, so [api/yasa.rs](api/yasa.rs) copies it into the
+request extensions first. Locally it's a plain `tokio::spawn` (`in_background` in
+[src/lib.rs](src/lib.rs)). The Painel shows "a ser processado" and polls `/api/auth/me` every 3 s
+until the read is done.
 
-  All-zero codes (região `00`, núcleo or agrupamento `0000`) are SIIE's way of saying "none" and
-  are skipped everywhere, including the lists. Blind spot: núcleo access to a núcleo with a single
-  agrupamento reads as "agrupamento"; the agrupamentos list is exact either way.
-- `nucleos`, `regioes` (`text[]`): the núcleo and região codes in the same grid. They are kept so
-  the level can be checked: the dashboard shows all three lists, and the Access page shows the counts.
+**Validity.** A read stays valid for `ACCESS_VALIDITY_DAYS` days (env var, default 7). Only the
+read time is stored; the expiry is computed, so changing the variable applies to everyone at once.
+The first login after expiry re-reads it, and the old grants stay in force until the new read
+finishes. A claim (`refresh_status = 'running'`) stops two logins reading at once; a run that
+started more than 10 minutes ago is considered dead and can be claimed again.
+
+**Level.** SIIE doesn't expose the role, so it is read from how widely the grid's rows spread
+(`siie::Visibility::level`), checked in this order:
+1. more than 1 região: nacional
+2. more than 1 núcleo: regiao
+3. exactly 1 agrupamento: **seccao** if all its rows sit in one single secção, else agrupamento
+   (checked before núcleo, since one agrupamento also means one núcleo)
+4. 1 núcleo, or several agrupamentos: nucleo
+5. otherwise: none
+
+All-zero codes (região `00`, núcleo or agrupamento `0000`) are SIIE's way of saying "none" and are
+skipped. Blind spots: núcleo access to a núcleo with a single agrupamento reads as "agrupamento";
+an agrupamento whose only rows are one secção reads as "seccao". The grants are exact either way.
+
+**Secções.** Types: 1 Alcateia (Lobitos), 2 Expedição (Exploradores), 3 Comunidade (Pioneiros),
+4 Clã (Caminheiros); `numero` tells apart two of the same type in one agrupamento (ultra rare).
+How the grid's `seccao` / `siglaseccao` columns encode them is still to be confirmed (POC page,
+"Secções nesta página"); until `siie::seccao_from_row` is filled in, no secções are collected and
+every grant is a whole agrupamento.
+
+**Tables** (migration 0004). All organisation codes are `smallint`; SIIE's zero-padded strings are
+parsed on the way in and padded again only for display.
+
+| Table | Holds |
+| --- | --- |
+| `regioes`, `nucleos`, `agrupamentos`, `seccoes` | The organisation tree as SIIE shows it (codes, parents, agrupamento names). Reference data, no personal data, upserted by every read. Basis for núcleo/região digests. |
+| `account_access` | Per account: `level`, `refreshed_at`, `refresh_status` (idle/running/failed), `refresh_error`. |
+| `account_grants` | Per account: one row per whole agrupamento (`seccao_*` null), or one row for a single secção. **Data queries must filter on this table.** An account's núcleos and regiões follow from it via `agrupamentos`. |
 
 Endpoints:
 
 | Route | Who | What |
 | --- | --- | --- |
 | `POST /api/auth/login`, `POST /api/auth/logout` | anyone | see above |
-| `GET /api/auth/me` | logged in | `{accountId, label, role, accessLevel, agrupamentos, nucleos, regioes}` or 401 |
-| `GET /api/admin/accounts` | admin | everyone with access, last login, access level, agrupamento/núcleo/região counts |
+| `GET /api/auth/me` | logged in | `{accountId, label, role, access: {level, status, refreshedAt, validUntil, error, agrupamentos[], nucleos[], regioes[]}}` or 401 |
+| `GET /api/admin/accounts` | admin | everyone with access, last login, access level, status, validity, agrupamento/núcleo/região counts |
 | `POST /api/admin/accounts` | admin | invite `{method, identifier, label, role}`; 409 if already invited |
 | `PATCH /api/admin/accounts/{id}` | admin | `{status?, role?}`; refuses to leave YASA without an active admin |
+| `GET /api/admin/events` | admin | the latest 100 events, newest first |
+
+**History.** `account_events` records invites, logins (with the access level and counts they got),
+enable/disable, role changes and identifier links, each with who did it (`actor_id`; null = the
+`invite` command or the system). `detail` holds role names and counts only, never identifiers.
+The Acessos page shows it as "Histórico".
 
 In Rust, handlers take `CurrentAccount` or `AdminAccount` ([src/auth.rs](src/auth.rs)) to require
 a login or an admin.
@@ -111,6 +155,9 @@ Checks (the same as CI):
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cd web && npm run lint && npm run build
 ```
+
+Database tests (store, claim lifecycle) need a migrated local database and are skipped by default:
+`cargo test -- --ignored --test-threads=1`.
 
 ## Deploy (Vercel + Neon)
 

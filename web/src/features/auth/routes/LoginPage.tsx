@@ -63,7 +63,7 @@ export function LoginPage() {
           )}
 
           <Button type="submit" variant="primary" loading={login.isPending}>
-            {login.isPending ? 'A verificar o seu acesso no SIIE…' : 'Entrar'}
+            {login.isPending ? 'A verificar…' : 'Entrar'}
           </Button>
         </form>
       </div>

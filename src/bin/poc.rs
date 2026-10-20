@@ -97,9 +97,11 @@ fn render_result(r: &GridResponse) -> Html<String> {
             format!(
                 "<h2>Top-level keys</h2><p><code>{}</code></p>\
                  <h2>Fields in the first record</h2><p><code>{}</code></p>\
+                 {}\
                  <h2>JSON</h2><pre>{}</pre>",
                 esc(&top),
                 esc(&fields),
+                seccoes_table(v),
                 esc(&pretty)
             )
         }
@@ -131,6 +133,49 @@ fn render_result(r: &GridResponse) -> Html<String> {
 }
 
 /// Kendo grids answer `{"Data": [...], "Count": n}`; also accept lowercase or a bare array.
+/// Discovery for secções: how `seccao` / `siglaseccao` encode the type (1-4) and tell apart two
+/// secções of the same type in one agrupamento. Organisation codes only, no personal data.
+fn seccoes_table(v: &Value) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    let rows = match v {
+        Value::Array(a) => a.as_slice(),
+        _ => match v
+            .get("Data")
+            .or_else(|| v.get("data"))
+            .and_then(Value::as_array)
+        {
+            Some(a) => a.as_slice(),
+            None => &[],
+        },
+    };
+    // (seccao, siglaseccao) -> (row count, distinct agrupamentos)
+    let mut pairs: BTreeMap<(String, String), (usize, BTreeSet<String>)> = BTreeMap::new();
+    for row in rows {
+        let raw = |f: &str| row.get(f).map_or("(missing)".to_owned(), Value::to_string);
+        let entry = pairs
+            .entry((raw("seccao"), raw("siglaseccao")))
+            .or_default();
+        entry.0 += 1;
+        entry.1.insert(raw("agrupamento"));
+    }
+    let lines: String = pairs
+        .iter()
+        .map(|((s, sigla), (n, agrs))| {
+            format!(
+                "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{n}</td><td>{}</td></tr>",
+                esc(s),
+                esc(sigla),
+                agrs.len()
+            )
+        })
+        .collect();
+    format!(
+        "<h2>Secções nesta página</h2>\
+         <table border=1 cellpadding=4><tr><th>seccao</th><th>siglaseccao</th><th>rows</th>\
+         <th>agrupamentos</th></tr>{lines}</table>"
+    )
+}
+
 fn first_record(v: &Value) -> Option<&Map<String, Value>> {
     let rows = match v {
         Value::Array(a) => a,

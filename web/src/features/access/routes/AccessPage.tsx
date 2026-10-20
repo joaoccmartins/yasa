@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { formatUnixTime } from '../../../lib/format'
+import { formatUnixDate, formatUnixTime } from '../../../lib/format'
 import { Button } from '../../../ui/Button'
 import { accessLevelLabel } from '../../auth/access'
 import type { Me } from '../../auth/schema'
 import { useAccounts, useUpdateAccount } from '../api'
 import { InviteForm } from '../components/InviteForm'
+import { EventLog } from '../components/EventLog'
 import type { Account } from '../schema'
 
 const SKELETON_ROWS = 3
@@ -85,6 +86,8 @@ export function AccessPage({ me }: { me: Me }) {
           </table>
         </div>
       )}
+
+      <EventLog />
     </section>
   )
 }
@@ -99,7 +102,7 @@ type RowProps = {
 function AccountRow({ account: a, isMe, busy, onUpdate }: RowProps) {
   const methods = [a.hasNif && 'NIF', a.hasNin && 'NIN'].filter(Boolean).join(' + ')
   const active = a.status === 'active'
-  const seen = a.lastLoginAt != null
+  const seen = a.accessValidUntil != null
   return (
     <tr data-status={a.status}>
       <td>
@@ -118,8 +121,11 @@ function AccountRow({ account: a, isMe, busy, onUpdate }: RowProps) {
         </span>
       </td>
       <td>{formatUnixTime(a.lastLoginAt, 'Nunca')}</td>
-      {/* From SIIE, refreshed at each login; unknown until the first one. */}
-      <td>{seen ? accessLevelLabel(a.accessLevel) : '-'}</td>
+      {/* From SIIE, kept for the validity period; unknown until the first read. */}
+      <td>
+        {seen ? accessLevelLabel(a.accessLevel) : '-'}
+        <span className="sub">{accessStatusText(a)}</span>
+      </td>
       <td className="num">{seen ? a.agrupamentos : '-'}</td>
       <td className="num">{seen ? a.nucleos : '-'}</td>
       <td className="num">{seen ? a.regioes : '-'}</td>
@@ -138,4 +144,20 @@ function AccountRow({ account: a, isMe, busy, onUpdate }: RowProps) {
       </td>
     </tr>
   )
+}
+
+/** Second line under the level: where that access stands. */
+function accessStatusText(a: Account) {
+  switch (a.accessStatus) {
+    case 'running':
+      return 'a processar'
+    case 'failed':
+      return 'falhou'
+    case 'expired':
+      return 'expirado'
+    case 'never':
+      return ''
+    case 'ready':
+      return a.accessValidUntil != null ? `até ${formatUnixDate(a.accessValidUntil)}` : ''
+  }
 }

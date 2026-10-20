@@ -492,3 +492,53 @@ details summary {
   border-radius: 4px;
   font-size: 12px;
 }
+
+/* A titled block inside a page (e.g. the Access history) */
+.page-section {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+.page-section h2 {
+  font-size: 18px;
+}
+.page-section .hint {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+.table td.when {
+  width: 1%;
+  color: var(--ink-muted);
+}
+.table td.wrap {
+  white-space: normal;
+}
+
+/* Status notices (e.g. access being processed) */
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 14px;
+}
+.notice[data-tone="danger"] {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.tile .skeleton {
+  width: 50%;
+}
+.skeleton.tall {
+  height: 28px;
+  width: 30%;
+}
+/* A muted second line inside a table cell */
+.table .sub {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 12px;
+}

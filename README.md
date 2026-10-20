@@ -116,8 +116,9 @@ cd web && npm run lint && npm run build
 
 One-time setup:
 
-1. Push this repo to GitHub and import it in Vercel. `vercel.json` sets the build, the
-   `fra1` region and the rewrites.
+1. Push this repo to GitHub and import it in Vercel. Leave **Root Directory as the repo root**
+   (not `web`): the Rust function lives in `api/` and `vercel.json` builds `web/` itself. It also
+   sets the build, the `fra1` region and the rewrites, so the framework preset doesn't matter.
 2. In the Vercel project: Storage > Neon, region `aws-eu-central-1` (Frankfurt). This adds
    `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED`.
 3. `vercel env add LOGIN_KEY_SECRET` for Production and Preview (`openssl rand -hex 32`).

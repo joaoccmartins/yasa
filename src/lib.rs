@@ -3,6 +3,7 @@
 pub mod access;
 pub mod admin;
 pub mod auth;
+pub mod digest;
 pub mod member_reports;
 pub mod members;
 pub mod siie;
@@ -107,6 +108,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/agrupamentos/{code}/digest", get(digest::get))
         .route("/api/admin/accounts", get(admin::list).post(admin::invite))
         .route("/api/admin/accounts/{id}", patch(admin::update))
         .route("/api/admin/events", get(admin::events))

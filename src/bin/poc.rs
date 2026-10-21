@@ -67,6 +67,7 @@ struct FetchForm {
 
 async fn index() -> Html<String> {
     let report = siie::MEMBERS_REPORT;
+    let agrupamentos = siie::AGRUPAMENTOS_PAGE;
     page(&format!(
         r#"<h1>SIIE grid POC</h1>
 <form method="post" action="/fetch" autocomplete="off">
@@ -81,7 +82,8 @@ async fn index() -> Html<String> {
   </fieldset>
   <label>Report(s) or page<br><textarea name="target" rows="8" cols="70" placeholder="{report}"></textarea></label>
   <p><small>Profile: one report per line, e.g. <code>elementos/progresso/lista-lobitos</code>
-  (a pasted <code>/elementos/List?xml=...</code> page path works too); all are read with one
+  (a pasted <code>/elementos/List?xml=...</code> page path works too, and other list pages
+  such as <code>{agrupamentos}</code> are opened as they are); all are read with one
   login. Links: one page, e.g. <code>/</code> for the menu. Raw: one report.</small></p>
   <label>Page size (raw) <input name="page_size" type="number" min="1" max="{MAX_PAGE_SIZE}" value="{DEFAULT_PAGE_SIZE}"></label>
   <button>Fetch</button>
@@ -250,13 +252,14 @@ struct ColStats {
     shapes: HashMap<String, u64>,
 }
 
-/// A report path from one input line. A pasted page path ("/elementos/List?xml=<report>&t=...")
-/// also works: the report is what follows "xml=", up to any "&". Without this, SIIE gets the
-/// prefix twice and answers 500.
+/// A report path from one input line. A pasted members page path
+/// ("/elementos/List?xml=<report>&t=...") also works: the report is what follows "xml=", up to
+/// any "&". Without this, SIIE gets the prefix twice and answers 500. Any other page path (e.g.
+/// "/agrupamentos/list?xml=...") is kept whole, up to any "&", and opened as it is.
 fn report_path(line: &str) -> String {
     let line = line.trim();
     let report = match line.split_once("xml=") {
-        Some((page, report)) if page.starts_with('/') => report,
+        Some(("/elementos/List?", report)) => report,
         _ => line,
     };
     report.split('&').next().unwrap_or_default().to_owned()
@@ -664,6 +667,10 @@ mod tests {
         assert_eq!(
             report_path("/elementos/List?xml=elementos/habilitacoes/lista-habilitacoes&amp;t=X"),
             "elementos/habilitacoes/lista-habilitacoes"
+        );
+        assert_eq!(
+            report_path("/agrupamentos/list?xml=agrupamentos/agrupamento/agrupamento&amp;t=X"),
+            siie::AGRUPAMENTOS_PAGE
         );
     }
 

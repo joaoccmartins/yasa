@@ -5,7 +5,8 @@ your own SIIE account, and YASA shows only the data that account gives you acces
 
 Status: infrastructure and accounts are done (invite-only, SIIE-verified logins, scope from
 SIIE, Access page for admins). Members are imported per agrupamento, pseudonymised, with their
-history. Progress (etapas, especialidades), cargos, health and charts come next.
+history, progress (etapas, especialidades), cargos and health. The Agrupamento page shows the
+first digest: members per ano escutista, in total and per secção.
 
 ## Architecture
 
@@ -240,6 +241,38 @@ Entries, exits and comebacks are changes of `present`: first sighting `null -> t
 row; the first values are the old_value of each field's first change), gone from its
 agrupamento's grid `true -> false`, back `false -> true`. Someone who moves shows as an exit from
 the old agrupamento and, once the new one is imported, an `agrupamento` change plus a comeback.
+
+## Agrupamento digest
+
+`GET /api/agrupamentos/{code}/digest` ([src/digest.rs](src/digest.rs)), shown on the Agrupamento
+page. It needs a whole-agrupamento grant (secção-only readers have no import) and returns counts
+only, never a member. Rules, all rebuilt from each member's dates on every request:
+
+- An ano escutista runs from October 1 to September 30 (2024 = 2024/25). The graph starts at the
+  earliest year any member of the agrupamento starts.
+- **Start**: `admitted_on`, else the earliest adesão or promessa, else the first import that saw
+  them. **End**: the current year while active; else `ano_saida` (left in 2019 = last year
+  2018/19, to be checked against real data); else the year of their latest dated record.
+- A member counts in every year from start to end, in the secção they were in on September 30:
+  Dirigentes from the promessa de dirigente or first cargo in the agrupamento; for the current
+  year, SIIE's current secção; otherwise the secção of the latest adesão; otherwise
+  **Sem registo**. The secções always add up to the total.
+
+### Agrupamento data
+
+Read in each member import from `/agrupamentos/list?xml=agrupamentos/agrupamento/agrupamento`
+(SIIE honours the `agrupamento` filter), into `agrupamentos`, `nucleos.name` and `regioes.name`
+(`member_reports::AGRUPAMENTO_COLUMNS`). Optional: if it fails, the import's warning says so.
+
+| Grid key(s) | Decision | Where |
+| --- | --- | --- |
+| `descricao` | keep (the name) | `agrupamentos.name` |
+| `estado`, `tipo`, `paroquia`, `patrono` | keep | `agrupamentos` |
+| `email`, `emailnotif`, `telefone`, `site` | keep (the agrupamento's own contacts) | `agrupamentos` |
+| `cp1`, `localidade` | keep (sede area only) | `agrupamentos.cp4`, `.localidade` |
+| `dtiniciado`; the date in `osnfiliado` | keep the dates, drop the OS numbers | `agrupamentos.iniciado_on`, `.filiado_on` |
+| `nucnome`, `regnome` | keep, without the code prefix | `nucleos.name`, `regioes.name` |
+| `morada`, `cp2`, `codigopostal`, `codpostal`, every `*correio` (mailing address), `osniniciado`, OS numbers, `fax`, `observacoes`, `florlis`, `pais`, `cid`, `rid`, `agrupamentomonitor`, `agrupnome`, the `sigla*` and `*nomecurto` copies | **drop** | nowhere |
 
 ## Local development
 

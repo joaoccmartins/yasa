@@ -13,6 +13,12 @@
   --accent-soft: #e2efe9;
   --danger: #b3261e;
   --contour: rgb(29 107 80 / 0.07);
+  /* Chart series: the secções in CNE colours, plus Dirigentes. Validated as a set per theme. */
+  --series-lobitos: #eda100;
+  --series-exploradores: #008300;
+  --series-pioneiros: #2a78d6;
+  --series-caminheiros: #e34948;
+  --series-dirigentes: #6250d6;
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -40,6 +46,11 @@
     --accent-soft: #173127;
     --danger: #f2877e;
     --contour: rgb(79 182 140 / 0.08);
+    --series-lobitos: #c98500;
+    --series-exploradores: #008300;
+    --series-pioneiros: #3987e5;
+    --series-caminheiros: #e66767;
+    --series-dirigentes: #9085e9;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.35);
   }
 }

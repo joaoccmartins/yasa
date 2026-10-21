@@ -37,6 +37,9 @@ const ADAUTH_FIELD: &str = "adauthentication";
 const GRID_PAGE_PREFIX: &str = "/elementos/List?xml=";
 /// The "dados completos" members grid: access and member data are both read from it.
 pub const MEMBERS_REPORT: &str = "elementos/elementos/dados-completos";
+/// The agrupamentos list: general data per agrupamento. Not under GRID_PAGE_PREFIX, so it is
+/// opened by its full page path.
+pub const AGRUPAMENTOS_PAGE: &str = "/agrupamentos/list?xml=agrupamentos/agrupamento/agrupamento";
 const GRID_API_MARKER: &str = "api/generic?xml=";
 const MAX_XML_MENTIONS: usize = 15;
 
@@ -390,9 +393,14 @@ pub struct Report {
 }
 
 /// Opens a list screen like a browser navigation (cookies only) and reads this session's
-/// encrypted report id from it. `xml_path` is the screen's report, e.g. `MEMBERS_REPORT`.
+/// encrypted report id from it. `xml_path` is the screen's report under GRID_PAGE_PREFIX, e.g.
+/// `MEMBERS_REPORT`, or a full page path starting with `/`, e.g. `AGRUPAMENTOS_PAGE`.
 pub async fn open_report(client: &Client, xml_path: &str) -> Result<Report, SiieError> {
-    let page = format!("{GRID_PAGE_PREFIX}{xml_path}");
+    let page = if xml_path.starts_with('/') {
+        xml_path.to_owned()
+    } else {
+        format!("{GRID_PAGE_PREFIX}{xml_path}")
+    };
     let html = page_html(client, &page).await?;
     match find_report_xml(&html) {
         Some(id) => Ok(Report { page, id }),

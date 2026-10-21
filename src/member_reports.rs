@@ -556,6 +556,145 @@ async fn stored_by_nin(
         .collect())
 }
 
+/// The agrupamentos list (`siie::AGRUPAMENTOS_PAGE`): the agrupamento's own data, stored as
+/// columns of `agrupamentos`, as (grid key, column, kind). Keys checked 2026-10-21 with the POC
+/// profile. Besides these, `descricao` (the name), the date in `osnfiliado` and the núcleo and
+/// região names are read. Never read: the street and mailing addresses, OS numbers, fax,
+/// observações, flor de lis and internal ids.
+#[rustfmt::skip]
+pub const AGRUPAMENTO_COLUMNS: &[(&str, &str, Kind)] = &[
+    ("estado", "estado", Text), ("tipo", "tipo", Text), ("paroquia", "paroquia", Text),
+    ("patrono", "patrono", Text), ("email", "email", Text), ("emailnotif", "emailnotif", Text),
+    ("telefone", "telefone", Text), ("site", "site", Text), ("cp1", "cp4", Text),
+    ("localidade", "localidade", Text), ("dtiniciado", "iniciado_on", Date),
+];
+const AGRUPAMENTO_EXTRA_KEYS: [&str; 6] = [
+    "descricao",
+    "osnfiliado",
+    "nucleo",
+    "nucnome",
+    "regiao",
+    "regnome",
+];
+
+/// One agrupamento's row of the agrupamentos list, parsed.
+#[derive(Debug, PartialEq)]
+pub struct AgrupamentoData {
+    /// AGRUPAMENTO_COLUMNS by column name, plus `name` and `filiado_on`.
+    pub columns: Map<String, Value>,
+    /// (code, name) of its núcleo and região, for their tables.
+    pub nucleo: Option<(i16, String)>,
+    pub regiao: Option<(i16, String)>,
+}
+
+pub fn parse_agrupamento(row: &Map<String, Value>) -> Result<AgrupamentoData, SiieError> {
+    require(
+        row,
+        AGRUPAMENTO_COLUMNS
+            .iter()
+            .map(|(k, _, _)| *k)
+            .chain(AGRUPAMENTO_EXTRA_KEYS),
+    )?;
+    let mut columns = Map::new();
+    for &(key, column, kind) in AGRUPAMENTO_COLUMNS {
+        columns.insert(column.to_owned(), read(row, key, kind)?);
+    }
+    columns.insert("name".to_owned(), read(row, "descricao", Text)?);
+    let filiado_on = text(row, "osnfiliado").and_then(|t| os_date(&t));
+    columns.insert(
+        "filiado_on".to_owned(),
+        filiado_on.map_or(Value::Null, Value::String),
+    );
+    let named = |code: &'static str, name: &str| -> Result<Option<(i16, String)>, SiieError> {
+        Ok(field_code(row, code)?.zip(text(row, name).map(|n| strip_code(&n))))
+    };
+    Ok(AgrupamentoData {
+        columns,
+        nucleo: named("nucleo", "nucnome")?,
+        regiao: named("regiao", "regnome")?,
+    })
+}
+
+/// The date of an ordem de serviço field, "123, 15-03-1985" -> "1985-03-15"; the OS number
+/// before the comma is dropped. SIIE keeps it as free text, so anything else is None, not an
+/// error (some rows hold only the number).
+fn os_date(t: &str) -> Option<String> {
+    let d = t.rsplit(',').next()?.trim();
+    let mut parts = d.split('-');
+    let (dd, mm, yyyy) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits = |p: &str, n: usize| p.len() == n && p.bytes().all(|b| b.is_ascii_digit());
+    (parts.next().is_none() && digits(dd, 2) && digits(mm, 2) && digits(yyyy, 4))
+        .then(|| format!("{yyyy}-{mm}-{dd}"))
+}
+
+/// "0505 - Junta de Núcleo de Guimarães" -> "Junta de Núcleo de Guimarães".
+fn strip_code(name: &str) -> String {
+    name.split_once(" - ")
+        .map_or(name, |(_, n)| n)
+        .trim()
+        .to_owned()
+}
+
+/// Reads one agrupamento's row of the agrupamentos list (SIIE honours the `agrupamento`
+/// filter there too). None if SIIE doesn't list it. A row of another agrupamento is ignored,
+/// never stored under this one.
+pub async fn fetch_agrupamento(
+    client: &Client,
+    token: &SecretString,
+    report: &siie::Report,
+    filter: &Value,
+    code: i16,
+) -> Result<Option<AgrupamentoData>, SiieError> {
+    let mut found = None;
+    siie::for_each_row(client, token, report, Some(filter), |row| {
+        if field_code(row, AGRUPAMENTO)? == Some(code) {
+            found = Some(parse_agrupamento(row)?);
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(found)
+}
+
+/// Writes an agrupamento's data, and its núcleo's and região's names. Runs inside the import's
+/// transaction.
+pub(crate) async fn write_agrupamento(
+    tx: &mut PgConnection,
+    code: i16,
+    d: &AgrupamentoData,
+) -> Result<(), sqlx::Error> {
+    // Column names come from AGRUPAMENTO_COLUMNS, never from SIIE.
+    let cols: Vec<(&str, &str)> = AGRUPAMENTO_COLUMNS
+        .iter()
+        .map(|(_, c, k)| (*c, k.sql()))
+        .chain([("filiado_on", "date")])
+        .collect();
+    let defs: Vec<String> = cols.iter().map(|(c, t)| format!("{c} {t}")).collect();
+    let sets: Vec<String> = cols.iter().map(|(c, _)| format!("{c} = r.{c}")).collect();
+    // The name also comes from the access read: keep it if this list has none.
+    sqlx::query(&format!(
+        "update agrupamentos a set {}, name = coalesce(r.name, a.name), details_updated_at = now()
+         from jsonb_to_record($2) as r(name text, {})
+         where a.code = $1",
+        sets.join(", "),
+        defs.join(", ")
+    ))
+    .bind(code)
+    .bind(Json(&d.columns))
+    .execute(&mut *tx)
+    .await?;
+    for (table, named) in [("nucleos", &d.nucleo), ("regioes", &d.regiao)] {
+        if let Some((code, name)) = named {
+            sqlx::query(&format!("update {table} set name = $2 where code = $1"))
+                .bind(code)
+                .bind(name)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,6 +813,33 @@ mod tests {
             (a["noites"].clone(), a["noites_campo"].clone()),
             (json!(-3), json!(2))
         );
+    }
+
+    #[test]
+    fn agrupamento_row_keeps_only_the_listed_fields() {
+        let row = obj(json!({
+            "agrupamento": "1259", "descricao": "Nome", "agrupnome": "1259 - Nome",
+            "estado": "Ativo", "tipo": "Terrestre", "paroquia": "P", "patrono": "São Sebastião",
+            "email": "a.1259@x.pt", "emailnotif": "a.1259@x.pt", "telefone": "253000000",
+            "site": null, "cp1": "4800", "cp2": "123", "localidade": "Guimarães",
+            "morada": "Rua X, 10", "dtiniciado": "1990-05-01T00:00:00",
+            "osnfiliado": "123, 15-03-1985", "osniniciado": "777", "nucleo": "0505",
+            "nucnome": "0505 - Junta de Núcleo de Guimarães", "regiao": "05",
+            "regnome": "05 - Junta Regional de Braga", "rid": 1
+        }));
+        let d = parse_agrupamento(&row).unwrap();
+        assert_eq!(d.columns["cp4"], "4800");
+        assert_eq!(d.columns["iniciado_on"], "1990-05-01");
+        assert_eq!(d.columns["filiado_on"], "1985-03-15");
+        assert_eq!(d.columns["name"], "Nome");
+        assert_eq!(d.nucleo, Some((505, "Junta de Núcleo de Guimarães".into())));
+        assert_eq!(d.regiao, Some((5, "Junta Regional de Braga".into())));
+        let kept = format!("{:?}", d.columns);
+        for dropped in ["Rua X", "123", "777"] {
+            assert!(!kept.contains(dropped), "{dropped}");
+        }
+        // An OS field with only the number has no date.
+        assert_eq!(os_date("123"), None);
     }
 
     #[test]

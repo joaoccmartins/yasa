@@ -523,6 +523,9 @@ struct Reports {
     especialidades: Vec<(siie::Report, i16)>,
     /// Everything in member_reports.rs.
     others: member_reports::Opened,
+    /// The agrupamentos list. Optional: if it can't be opened, each import says so in its
+    /// warning and the members are imported all the same.
+    agrupamentos: Result<siie::Report, String>,
 }
 
 async fn open_reports(client: &Client) -> Result<Reports, SiieError> {
@@ -532,10 +535,14 @@ async fn open_reports(client: &Client) -> Result<Reports, SiieError> {
         especialidades.push((siie::open_report(client, path).await?, tipo));
     }
     let others = member_reports::open(client).await?;
+    let agrupamentos = siie::open_report(client, siie::AGRUPAMENTOS_PAGE)
+        .await
+        .map_err(|e| format!("{}: {e}", siie::AGRUPAMENTOS_PAGE));
     Ok(Reports {
         members,
         especialidades,
         others,
+        agrupamentos,
     })
 }
 
@@ -549,6 +556,8 @@ struct Fetched {
     especialidades_read: Vec<i16>,
     /// This agrupamento's rows of the member_reports.rs reports.
     others: member_reports::Fetched,
+    /// Its own row of the agrupamentos list; None if it couldn't be read (see `warning`).
+    agrupamento: Option<member_reports::AgrupamentoData>,
     /// The reports skipped in this import and why, shown on the Painel.
     warning: Option<String>,
 }
@@ -636,11 +645,37 @@ async fn import_one(
     let others = member_reports::fetch(client, token, &reports.others, Some(&filter)).await;
     warnings.extend(others.skipped.iter().map(|(_, e)| e.clone()));
     warnings.extend(run_wide.skipped.iter().map(|(_, e)| e.clone()));
+    // The agrupamento's own data. Optional like the reports above: a failure is a warning.
+    let agrupamento = match &reports.agrupamentos {
+        Ok(report) => {
+            let read =
+                member_reports::fetch_agrupamento(client, token, report, &filter, q.agrupamento);
+            match read.await {
+                Ok(Some(d)) => Some(d),
+                Ok(None) => {
+                    warnings.push(format!(
+                        "{}: o agrupamento {code} não está na lista.",
+                        siie::AGRUPAMENTOS_PAGE
+                    ));
+                    None
+                }
+                Err(e) => {
+                    warnings.push(e.to_string());
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            warnings.push(e.clone());
+            None
+        }
+    };
     let fetched = Fetched {
         rows,
         especialidades,
         especialidades_read,
         others,
+        agrupamento,
         warning: (!warnings.is_empty()).then(|| warnings.join(" | ")),
     };
     store(db, q, fetched, run_wide).await.map_err(db_message)
@@ -685,6 +720,7 @@ async fn store(
         especialidades,
         especialidades_read,
         others,
+        agrupamento,
         warning,
     } = fetched;
     // Sorted by NIN, so two imports touching the same members lock rows in the same order.
@@ -770,6 +806,9 @@ async fn store(
     let sources = [&others, run_wide];
     let more = member_reports::write(&mut tx, q.agrupamento, &nins, &known, &sources);
     changes.extend(more.await?);
+    if let Some(d) = &agrupamento {
+        member_reports::write_agrupamento(&mut tx, q.agrupamento, d).await?;
+    }
     // 3. Exits: still marked present in this agrupamento, but no longer in its grid. Someone who
     //    moved shows up again in the other agrupamento's import (agrupamento change + comeback).
     let gone: Vec<(String,)> = sqlx::query_as(
@@ -1164,6 +1203,7 @@ mod db_tests {
             especialidades,
             especialidades_read: vec![1, 2, 3, 4],
             others,
+            agrupamento: None,
             warning: None,
         }
     }

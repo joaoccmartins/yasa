@@ -18,3 +18,9 @@ const date = new Intl.DateTimeFormat('pt-PT', { dateStyle: 'short' })
 export function formatUnixDate(seconds: number) {
   return date.format(new Date(seconds * 1000))
 }
+
+// A YYYY-MM-DD date from the API, shown as dd/mm/yyyy without going through the time zone.
+export function formatIsoDate(iso: string) {
+  const [y, m, d] = iso.split('-')
+  return `${d}/${m}/${y}`
+}

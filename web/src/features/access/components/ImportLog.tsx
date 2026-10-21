@@ -81,7 +81,7 @@ export function ImportLog() {
 function outcome(i: ImportLogRow) {
   switch (i.status) {
     case 'done': {
-      const counts = `${STATUS.done}: ${i.membersSeen ?? 0} elementos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas`
+      const counts = `${STATUS.done}: ${i.membersSeen ?? 0} elementos, ${i.entries ?? 0} novos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas`
       return i.warning ? `${counts}. Relatórios ignorados: ${i.warning}` : counts
     }
     case 'failed':

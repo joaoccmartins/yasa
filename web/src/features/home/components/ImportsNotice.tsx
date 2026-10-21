@@ -23,7 +23,7 @@ export function ImportsNotice({ imports }: { imports: MemberImport[] }) {
   // Warnings are joined with " | " per import; also usually one cause for all.
   const warnings = [...new Set(done.flatMap((i) => i.warning?.split(' | ') ?? []))]
   // Totals over the finished imports: elementos seen, field changes, exits.
-  const sum = (key: 'members' | 'changes' | 'exits') =>
+  const sum = (key: 'members' | 'entries' | 'changes' | 'exits') =>
     imports.reduce((n, i) => n + (i.status === 'done' ? (i[key] ?? 0) : 0), 0)
   return (
     <section className="panel" aria-labelledby="imports-title">
@@ -37,8 +37,8 @@ export function ImportsNotice({ imports }: { imports: MemberImport[] }) {
       ) : (
         done.length > 0 && (
           <p className="hint" role="status">
-            Importação concluída: {sum('members')} elementos, {sum('changes')} alterações,{' '}
-            {sum('exits')} saídas.
+            Importação concluída: {sum('members')} elementos, {sum('entries')} novos,{' '}
+            {sum('changes')} alterações, {sum('exits')} saídas.
           </p>
         )
       )}
@@ -87,7 +87,7 @@ function describe(i: MemberImport) {
     .join(' · ')
   switch (i.status) {
     case 'done':
-      return `${head} ${formatUnixTime(i.finishedAt)}: ${i.members ?? 0} elementos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas${i.warning ? ' (com avisos)' : ''}`
+      return `${head} ${formatUnixTime(i.finishedAt)}: ${i.members ?? 0} elementos, ${i.entries ?? 0} novos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas${i.warning ? ' (com avisos)' : ''}`
     case 'failed':
       return `${head}: ${i.error ?? 'erro desconhecido.'}`
     default:

@@ -210,7 +210,10 @@ the import.
 - Only dados completos is required. Any other report that fails (SIIE error, renamed column) is
   skipped for that import: its columns and tables are left exactly as they were (no nulls, no
   removals), the rest is stored, and the import ends `done` with a `warning` naming the report
-  and the error (migration 0010). The Painel and the Acessos history show it.
+  and the error (migration 0010). The Painel and the Acessos history show it. Especialidades
+  are replaced per secção, so a failing secção report only leaves that secção as it was.
+- Counts per import: `members_seen`, `entries` (members new to YASA, migration 0011),
+  `changes` (everything else in `member_changes`) and `exits`.
 
 Not imported: `formacao/formacao/formacao` (only a member list), tutores (the user chose not to
 keep tutor links), `noites-campo` (derivable from activities), `horas-mar`/`horas-voo` and the

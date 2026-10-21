@@ -75,6 +75,7 @@ export const importLogSchema = z.object({
   membersSeen: z.number().nullable(),
   changes: z.number().nullable(),
   exits: z.number().nullable(),
+  entries: z.number().nullable(),
   error: z.string().nullable(),
   warning: z.string().nullable(),
 })

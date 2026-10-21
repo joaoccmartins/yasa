@@ -52,6 +52,8 @@ export const importSchema = z.object({
   members: z.number().nullable(),
   changes: z.number().nullable(),
   exits: z.number().nullable(),
+  // Members new to YASA (first sightings); null on imports from before it was counted.
+  entries: z.number().nullable(),
   error: z.string().nullable(),
   // Reports skipped in a done import, and why; their data was left as it was.
   warning: z.string().nullable(),

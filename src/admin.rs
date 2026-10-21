@@ -349,6 +349,8 @@ pub struct ImportRow {
     changes: Option<i32>,
     exits: Option<i32>,
     error: Option<String>,
+    /// Reports skipped in a done import, and why.
+    warning: Option<String>,
 }
 
 /// GET /api/admin/imports: the latest member imports, newest first. Counts only, no members.
@@ -360,7 +362,7 @@ pub async fn imports(
         "select i.id, i.agrupamento, g.name as agrupamento_name, a.label as account_label,
                 i.status, extract(epoch from i.queued_at)::bigint as queued_at,
                 extract(epoch from i.finished_at)::bigint as finished_at,
-                i.members_seen, i.changes, i.exits, i.error
+                i.members_seen, i.changes, i.exits, i.error, i.warning
          from member_imports i
          left join agrupamentos g on g.code = i.agrupamento
          left join accounts a on a.id = i.account_id

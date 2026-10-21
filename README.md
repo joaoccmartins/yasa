@@ -207,6 +207,10 @@ the import.
   in that agrupamento (`agrup`): a narrower reader may not see a member's núcleo or região cargos.
 - `saida-elementos-por-ano` has no agrupamento column, so it is read whole once per run and
   matched by NIN.
+- Only dados completos is required. Any other report that fails (SIIE error, renamed column) is
+  skipped for that import: its columns and tables are left exactly as they were (no nulls, no
+  removals), the rest is stored, and the import ends `done` with a `warning` naming the report
+  and the error (migration 0010). The Painel and the Acessos history show it.
 
 Not imported: `formacao/formacao/formacao` (only a member list), tutores (the user chose not to
 keep tutor links), `noites-campo` (derivable from activities), `horas-mar`/`horas-voo` and the

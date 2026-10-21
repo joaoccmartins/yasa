@@ -589,8 +589,9 @@ fn split_kendo(body: Value) -> Result<(Vec<Value>, Option<u64>), SiieError> {
     }
 }
 
-/// A response's form for error messages: top-level keys and JSON types, never values.
-/// {"Data": null, "Message": "x"} -> "{Data: null, Message: string}".
+/// A response's form for error messages: top-level keys and JSON types, never values, plus the
+/// start of SIIE's own error text when there is one (a server message, not member data).
+/// {"Data": null, "Message": "x"} -> "{Data: null, Message: string} (SIIE: x)".
 fn shape(v: &Value) -> String {
     let kind = |v: &Value| match v {
         Value::Null => "null",
@@ -607,7 +608,12 @@ fn shape(v: &Value) -> String {
                 .take(10)
                 .map(|(k, v)| format!("{k}: {}", kind(v)))
                 .collect();
-            format!("{{{}}}", keys.join(", "))
+            let message = ["Message", "message", "ExceptionMessage"]
+                .iter()
+                .find_map(|k| o.get(*k).and_then(Value::as_str))
+                .map(|m| format!(" (SIIE: {})", m.chars().take(200).collect::<String>()))
+                .unwrap_or_default();
+            format!("{{{}}}{message}", keys.join(", "))
         }
         other => kind(other).to_owned(),
     }
@@ -755,10 +761,10 @@ mod tests {
         );
         assert_eq!(split_kendo(json!({"Total": 0})).unwrap().0.len(), 0);
         // Not a grid: an error naming keys and types only, never values.
-        let e = split_kendo(json!({"Message": "segredo", "Data": 3})).unwrap_err();
+        let e = split_kendo(json!({"Message": "Erro X", "Data": 3, "x": "segredo"})).unwrap_err();
         assert_eq!(
             e.to_string(),
-            "A resposta da grelha tem um formato inesperado: {Data: number, Message: string}."
+            "A resposta da grelha tem um formato inesperado: {Data: number, Message: string, x: string} (SIIE: Erro X)."
         );
         assert!(split_kendo(json!({"nope": 1})).is_err());
     }

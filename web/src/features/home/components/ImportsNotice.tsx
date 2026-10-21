@@ -20,6 +20,8 @@ export function ImportsNotice({ imports }: { imports: MemberImport[] }) {
   const done = imports.filter((i) => i.status === 'done')
   // Failures usually share one cause: show each distinct message once.
   const errors = [...new Set(failed.map((i) => i.error ?? 'erro desconhecido.'))]
+  // Warnings are joined with " | " per import; also usually one cause for all.
+  const warnings = [...new Set(done.flatMap((i) => i.warning?.split(' | ') ?? []))]
   // Totals over the finished imports: elementos seen, field changes, exits.
   const sum = (key: 'members' | 'changes' | 'exits') =>
     imports.reduce((n, i) => n + (i.status === 'done' ? (i[key] ?? 0) : 0), 0)
@@ -39,6 +41,19 @@ export function ImportsNotice({ imports }: { imports: MemberImport[] }) {
             {sum('exits')} saídas.
           </p>
         )
+      )}
+      {warnings.length > 0 && (
+        <div className="notice" role="status">
+          <p>
+            Alguns relatórios do SIIE não puderam ser lidos; os dados que vêm deles ficaram como
+            estavam:
+          </p>
+          <ul>
+            {warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
       )}
       {failed.length > 0 && (
         <div className="notice" data-tone="danger" role="status">
@@ -72,7 +87,7 @@ function describe(i: MemberImport) {
     .join(' · ')
   switch (i.status) {
     case 'done':
-      return `${head} ${formatUnixTime(i.finishedAt)}: ${i.members ?? 0} elementos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas`
+      return `${head} ${formatUnixTime(i.finishedAt)}: ${i.members ?? 0} elementos, ${i.changes ?? 0} alterações, ${i.exits ?? 0} saídas${i.warning ? ' (com avisos)' : ''}`
     case 'failed':
       return `${head}: ${i.error ?? 'erro desconhecido.'}`
     default:

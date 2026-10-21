@@ -181,35 +181,42 @@ pub async fn open(client: &Client) -> Result<Opened, SiieError> {
 pub struct Fetched {
     pub columns: HashMap<&'static str, HashMap<String, Map<String, Value>>>,
     pub records: HashMap<&'static str, BTreeMap<i64, Map<String, Value>>>,
+    /// Reports that failed, with the error: `write` leaves their columns and tables untouched.
+    pub skipped: Vec<(&'static str, String)>,
 }
 
 /// Reads one agrupamento from every report that has an agrupamento column (`filter`), or, with
-/// `filter` None, the whole of every report that hasn't (once per run).
+/// `filter` None, the whole of every report that hasn't (once per run). A report that fails is
+/// listed in `skipped` and the others go on: one broken report doesn't block the import.
 pub async fn fetch(
     client: &Client,
     token: &SecretString,
     opened: &Opened,
     filter: Option<&Value>,
-) -> Result<Fetched, SiieError> {
+) -> Fetched {
     let mut f = Fetched::default();
     for (report, r) in &opened.columns {
         if r.by_agrupamento != filter.is_some() {
             continue;
         }
-        siie::for_each_row(client, token, report, filter, |row| {
+        let read = siie::for_each_row(client, token, report, filter, |row| {
             f.add_column_row(r, row)
-        })
-        .await?;
+        });
+        if let Err(e) = read.await {
+            f.skipped.push((r.report, e.to_string()));
+        }
     }
     if filter.is_some() {
         for (report, r) in &opened.records {
-            siie::for_each_row(client, token, report, filter, |row| {
+            let read = siie::for_each_row(client, token, report, filter, |row| {
                 f.add_record_row(r, row)
-            })
-            .await?;
+            });
+            if let Err(e) = read.await {
+                f.skipped.push((r.report, e.to_string()));
+            }
         }
     }
-    Ok(f)
+    f
 }
 
 impl Fetched {
@@ -328,6 +335,12 @@ pub(crate) async fn write(
     sources: &[&Fetched],
 ) -> Result<Vec<Change>, sqlx::Error> {
     let mut changes = Vec::new();
+    // Reports that failed in this import (or this run) are left out: writing them would null
+    // their columns or remove their records.
+    let skipped: HashSet<&str> = sources
+        .iter()
+        .flat_map(|s| s.skipped.iter().map(|(r, _)| *r))
+        .collect();
 
     // Column tables, in COLUMN_REPORTS order.
     let mut tables: Vec<&'static str> = COLUMN_REPORTS.iter().map(|r| r.table).collect();
@@ -335,9 +348,12 @@ pub(crate) async fn write(
     for table in tables {
         let cols: Vec<(&str, Kind)> = COLUMN_REPORTS
             .iter()
-            .filter(|r| r.table == table)
+            .filter(|r| r.table == table && !skipped.contains(r.report))
             .flat_map(|r| r.columns.iter().copied())
             .collect();
+        if cols.is_empty() {
+            continue;
+        }
         // Every member of the import, every column null unless a report says otherwise.
         let rows: Vec<Map<String, Value>> = nins
             .iter()
@@ -346,9 +362,15 @@ pub(crate) async fn write(
                 for (c, _) in &cols {
                     row.insert((*c).to_owned(), Value::Null);
                 }
+                // Only the columns being written: a skipped report may have left part of its
+                // rows behind.
                 for s in sources {
                     if let Some(found) = s.columns.get(table).and_then(|t| t.get(nin)) {
-                        row.extend(found.clone());
+                        for (c, _) in &cols {
+                            if let Some(v) = found.get(*c) {
+                                row.insert((*c).to_owned(), v.clone());
+                            }
+                        }
                     }
                 }
                 row
@@ -390,7 +412,10 @@ pub(crate) async fn write(
 
     // Record tables.
     let none = BTreeMap::new();
-    for r in RECORD_REPORTS {
+    for r in RECORD_REPORTS
+        .iter()
+        .filter(|r| !skipped.contains(r.report))
+    {
         let fetched = sources
             .iter()
             .find_map(|s| s.records.get(r.table))

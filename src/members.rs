@@ -497,7 +497,7 @@ pub async fn run(state: &AppState, client: &Client, token: &SecretString, queued
     // Reports without an agrupamento column are read whole once, for every import of the run.
     let opened = async {
         let reports = open_reports(client).await?;
-        let run_wide = member_reports::fetch(client, token, &reports.others, None).await?;
+        let run_wide = member_reports::fetch(client, token, &reports.others, None).await;
         Ok::<_, SiieError>((reports, run_wide))
     };
     let (reports, run_wide) = match opened.await {
@@ -543,9 +543,13 @@ async fn open_reports(client: &Client) -> Result<Reports, SiieError> {
 /// `rows`; `store` keeps only those that are.
 struct Fetched {
     rows: Vec<Parsed>,
-    especialidades: Especialidades,
+    /// None if an especialidades report failed: they are then left untouched (they are
+    /// replaced per member, so a partial set would delete the rest).
+    especialidades: Option<Especialidades>,
     /// This agrupamento's rows of the member_reports.rs reports.
     others: member_reports::Fetched,
+    /// The reports skipped in this import and why, shown on the Painel.
+    warning: Option<String>,
 }
 
 async fn fail(db: &PgPool, id: i64, error: &str) {
@@ -591,13 +595,21 @@ async fn import_one(
     .await
     .map_err(|e| e.to_string())?;
     // The same agrupamento in each secção's especialidades report and in the other reports.
-    let mut especialidades = Especialidades::new();
+    // Only dados completos is required: any other report that fails is skipped, its tables
+    // left untouched, and named in the import's warning.
+    let mut warnings = Vec::new();
+    let mut especialidades = Some(Especialidades::new());
     for (report, tipo) in &reports.especialidades {
-        siie::for_each_row(client, token, report, Some(&filter), |row| {
-            parse_especialidade(row, *tipo, &mut especialidades)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+        let Some(found) = especialidades.as_mut() else {
+            break;
+        };
+        let read = siie::for_each_row(client, token, report, Some(&filter), |row| {
+            parse_especialidade(row, *tipo, found)
+        });
+        if let Err(e) = read.await {
+            warnings.push(e.to_string());
+            especialidades = None;
+        }
     }
 
     // dados completos lists inactive members too, so an agrupamento is never empty. No rows means
@@ -617,13 +629,14 @@ async fn import_one(
             "O SIIE devolveu elementos de outros agrupamentos ao pedir o {code}; a importação foi recusada."
         ));
     }
-    let others = member_reports::fetch(client, token, &reports.others, Some(&filter))
-        .await
-        .map_err(|e| e.to_string())?;
+    let others = member_reports::fetch(client, token, &reports.others, Some(&filter)).await;
+    warnings.extend(others.skipped.iter().map(|(_, e)| e.clone()));
+    warnings.extend(run_wide.skipped.iter().map(|(_, e)| e.clone()));
     let fetched = Fetched {
         rows,
         especialidades,
         others,
+        warning: (!warnings.is_empty()).then(|| warnings.join(" | ")),
     };
     store(db, q, fetched, run_wide).await.map_err(db_message)
 }
@@ -666,15 +679,11 @@ async fn store(
         mut rows,
         especialidades,
         others,
+        warning,
     } = fetched;
     // Sorted by NIN, so two imports touching the same members lock rows in the same order.
     rows.sort_by(|a, b| a.member.nin.cmp(&b.member.nin));
     let nins: Vec<String> = rows.iter().map(|p| p.member.nin.clone()).collect();
-    let especialidades: Especialidades = especialidades
-        .into_iter()
-        .filter(|((nin, _, _), _)| nins.binary_search(nin).is_ok())
-        .collect();
-
     let mut tx = db.begin().await?;
 
     // 1. Diff against the stored rows. Anything seen for the first time isn't a change: its
@@ -691,23 +700,6 @@ async fn store(
         .map(String::as_str)
         .collect();
     let known = |nin: &str| !first_seen.contains(nin);
-    // Especialidades: added, re-dated or gone. A member seen for the first time logs none.
-    let old_especialidades: Vec<(String, i16, String, Option<String>)> = sqlx::query_as(
-        "select nin, seccao_tipo, especialidade, achieved_on::text
-         from member_especialidades where nin = any($1)",
-    )
-    .bind(&nins)
-    .fetch_all(&mut *tx)
-    .await?;
-    let old_especialidades: Especialidades = old_especialidades
-        .into_iter()
-        .map(|(nin, tipo, name, on)| ((nin, tipo, name), on))
-        .collect();
-    changes.extend(especialidade_changes(
-        &old_especialidades,
-        &especialidades,
-        known,
-    ));
     // 2. Upserts. jsonb_to_recordset turns the rows into a table with these column types.
     let members: Vec<&Member> = rows.iter().map(|p| &p.member).collect();
     sqlx::query(
@@ -765,26 +757,9 @@ async fn store(
     .execute(&mut *tx)
     .await?;
 
-    // Especialidades are replaced wholesale for these members: what SIIE no longer lists goes
-    // (its removal is in member_changes).
-    sqlx::query("delete from member_especialidades where nin = any($1)")
-        .bind(&nins)
-        .execute(&mut *tx)
-        .await?;
-    let especialidades: Vec<Value> = especialidades
-        .iter()
-        .map(|((nin, tipo, name), on)| {
-            json!({"nin": nin, "seccao_tipo": tipo, "especialidade": name, "achieved_on": on})
-        })
-        .collect();
-    sqlx::query(
-        "insert into member_especialidades (nin, seccao_tipo, especialidade, achieved_on)
-         select * from jsonb_to_recordset($1) as r(nin text, seccao_tipo smallint,
-             especialidade text, achieved_on date)",
-    )
-    .bind(Json(&especialidades))
-    .execute(&mut *tx)
-    .await?;
+    if let Some(found) = especialidades {
+        changes.extend(write_especialidades(&mut tx, &nins, known, found).await?);
+    }
 
     // The member_reports.rs tables, now that every member has its row.
     let sources = [&others, run_wide];
@@ -823,17 +798,64 @@ async fn store(
     // 5. Done, with counts only.
     sqlx::query(
         "update member_imports set status = 'done', finished_at = now(), error = null,
-             members_seen = $2, changes = $3, exits = $4
+             members_seen = $2, changes = $3, exits = $4, warning = $5
          where id = $1",
     )
     .bind(q.id)
     .bind(rows.len() as i32)
     .bind(changes.len() as i32)
     .bind(exits as i32)
+    .bind(warning)
     .execute(&mut *tx)
     .await?;
 
     tx.commit().await
+}
+
+/// Especialidades of this import's members: diffed against the stored ones, then replaced
+/// wholesale (what SIIE no longer lists goes, and its removal is in the changes).
+async fn write_especialidades(
+    tx: &mut sqlx::PgConnection,
+    nins: &[String],
+    known: impl Fn(&str) -> bool,
+    found: Especialidades,
+) -> Result<Vec<Change>, sqlx::Error> {
+    let new: Especialidades = found
+        .into_iter()
+        .filter(|((nin, _, _), _)| nins.binary_search(nin).is_ok())
+        .collect();
+    let old: Vec<(String, i16, String, Option<String>)> = sqlx::query_as(
+        "select nin, seccao_tipo, especialidade, achieved_on::text
+         from member_especialidades where nin = any($1)",
+    )
+    .bind(nins)
+    .fetch_all(&mut *tx)
+    .await?;
+    let old: Especialidades = old
+        .into_iter()
+        .map(|(nin, tipo, name, on)| ((nin, tipo, name), on))
+        .collect();
+    let changes = especialidade_changes(&old, &new, known);
+
+    sqlx::query("delete from member_especialidades where nin = any($1)")
+        .bind(nins)
+        .execute(&mut *tx)
+        .await?;
+    let rows: Vec<Value> = new
+        .iter()
+        .map(|((nin, tipo, name), on)| {
+            json!({"nin": nin, "seccao_tipo": tipo, "especialidade": name, "achieved_on": on})
+        })
+        .collect();
+    sqlx::query(
+        "insert into member_especialidades (nin, seccao_tipo, especialidade, achieved_on)
+         select * from jsonb_to_recordset($1) as r(nin text, seccao_tipo smallint,
+             especialidade text, achieved_on date)",
+    )
+    .bind(Json(&rows))
+    .execute(&mut *tx)
+    .await?;
+    Ok(changes)
 }
 
 /// One import as /api/auth/me shows it (times in Unix seconds).
@@ -849,6 +871,7 @@ struct ImportRow {
     changes: Option<i32>,
     exits: Option<i32>,
     error: Option<String>,
+    warning: Option<String>,
 }
 
 /// The `imports` part of /api/auth/me: per granted agrupamento, its latest import if it is
@@ -861,7 +884,7 @@ pub async fn summary(db: &PgPool, account_id: Uuid) -> Result<Value, sqlx::Error
                  extract(epoch from i.queued_at)::bigint as queued_at,
                  extract(epoch from i.started_at)::bigint as started_at,
                  extract(epoch from i.finished_at)::bigint as finished_at,
-                 i.members_seen, i.changes, i.exits, i.error
+                 i.members_seen, i.changes, i.exits, i.error, i.warning
              from member_imports i
              left join agrupamentos a on a.code = i.agrupamento
              where i.agrupamento in (select agrupamento from account_grants where account_id = $1)
@@ -889,6 +912,7 @@ pub async fn summary(db: &PgPool, account_id: Uuid) -> Result<Value, sqlx::Error
                 "changes": r.changes,
                 "exits": r.exits,
                 "error": r.error,
+                "warning": r.warning,
             })
         })
         .collect())
@@ -1121,8 +1145,9 @@ mod db_tests {
             .collect();
         Fetched {
             rows,
-            especialidades,
+            especialidades: Some(especialidades),
             others,
+            warning: None,
         }
     }
 
@@ -1438,6 +1463,45 @@ mod db_tests {
         .await
         .unwrap();
         assert_eq!((cargos, atividades), (0, 1));
+
+        cleanup(db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs DATABASE_URL: cargo test -- --ignored"]
+    async fn a_skipped_report_leaves_its_columns_untouched() {
+        let (state, _) = setup().await;
+        let db = &state.db;
+        let none = member_reports::Fetched::default();
+        let i1 = new_import(db).await;
+        let first = fetched(
+            vec![row("TEST91A", "Lobito")],
+            progress("TEST91A", None),
+            &[],
+        );
+        store(db, &i1, first, &none).await.unwrap();
+
+        // The lobitos progress report failed this time: nothing it holds may become null.
+        let mut failed = member_reports::Fetched::default();
+        failed
+            .skipped
+            .push(("elementos/progresso/lista-lobitos", "erro".into()));
+        let i2 = new_import(db).await;
+        store(
+            db,
+            &i2,
+            fetched(vec![row("TEST91A", "Lobito")], failed, &[]),
+            &none,
+        )
+        .await
+        .unwrap();
+        assert!(changes(db, i2.id).await.is_empty());
+        let (etapa1,): (Option<String>,) =
+            sqlx::query_as("select letapa1::text from member_progress where nin = 'TEST91A'")
+                .fetch_one(db)
+                .await
+                .unwrap();
+        assert_eq!(etapa1.as_deref(), Some("2024-05-01"));
 
         cleanup(db).await;
     }

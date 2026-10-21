@@ -76,6 +76,7 @@ export const importLogSchema = z.object({
   changes: z.number().nullable(),
   exits: z.number().nullable(),
   error: z.string().nullable(),
+  warning: z.string().nullable(),
 })
 export const importLogListSchema = z.array(importLogSchema)
 export type ImportLogRow = z.infer<typeof importLogSchema>

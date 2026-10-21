@@ -53,6 +53,8 @@ export const importSchema = z.object({
   changes: z.number().nullable(),
   exits: z.number().nullable(),
   error: z.string().nullable(),
+  // Reports skipped in a done import, and why; their data was left as it was.
+  warning: z.string().nullable(),
 })
 export type MemberImport = z.infer<typeof importSchema>
 

@@ -331,3 +331,45 @@ pub async fn events(
     .map_err(db_error)?;
     Ok(Json(rows))
 }
+
+/// One member import, as the Access page history shows it.
+#[derive(Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRow {
+    id: i64,
+    agrupamento: i16,
+    agrupamento_name: Option<String>,
+    /// Whose login queued it. None = that account was deleted.
+    account_label: Option<String>,
+    status: String,
+    /// Unix seconds.
+    queued_at: i64,
+    finished_at: Option<i64>,
+    members_seen: Option<i32>,
+    changes: Option<i32>,
+    exits: Option<i32>,
+    error: Option<String>,
+}
+
+/// GET /api/admin/imports: the latest member imports, newest first. Counts only, no members.
+pub async fn imports(
+    State(s): State<AppState>,
+    _: AdminAccount,
+) -> Result<Json<Vec<ImportRow>>, ApiError> {
+    let rows = sqlx::query_as(
+        "select i.id, i.agrupamento, g.name as agrupamento_name, a.label as account_label,
+                i.status, extract(epoch from i.queued_at)::bigint as queued_at,
+                extract(epoch from i.finished_at)::bigint as finished_at,
+                i.members_seen, i.changes, i.exits, i.error
+         from member_imports i
+         left join agrupamentos g on g.code = i.agrupamento
+         left join accounts a on a.id = i.account_id
+         order by i.id desc
+         limit $1",
+    )
+    .bind(EVENTS_SHOWN)
+    .fetch_all(&s.db)
+    .await
+    .map_err(db_error)?;
+    Ok(Json(rows))
+}

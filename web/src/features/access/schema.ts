@@ -1,5 +1,10 @@
 import { z } from 'zod'
-import { accessLevelSchema, accessStatusSchema, type LoginMethod } from '../auth/schema'
+import {
+  accessLevelSchema,
+  accessStatusSchema,
+  importStatusSchema,
+  type LoginMethod,
+} from '../auth/schema'
 
 export const accountSchema = z.object({
   id: z.string(),
@@ -55,3 +60,22 @@ export const eventSchema = z.object({
 })
 export const eventListSchema = z.array(eventSchema)
 export type AccountEvent = z.infer<typeof eventSchema>
+
+// One member import for the Access page history. Counts only, never members.
+export const importLogSchema = z.object({
+  id: z.number(),
+  agrupamento: z.number(),
+  agrupamentoName: z.string().nullable(),
+  // Whose login queued it; null = that account was deleted.
+  accountLabel: z.string().nullable(),
+  status: importStatusSchema,
+  // Unix seconds.
+  queuedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  membersSeen: z.number().nullable(),
+  changes: z.number().nullable(),
+  exits: z.number().nullable(),
+  error: z.string().nullable(),
+})
+export const importLogListSchema = z.array(importLogSchema)
+export type ImportLogRow = z.infer<typeof importLogSchema>

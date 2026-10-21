@@ -31,10 +31,12 @@ const PASS_FIELD: &str = "password";
 // "false" = SIIE login (NIN + password), "true" = Loja Escutista login (NIF + password).
 const ADAUTH_FIELD: &str = "adauthentication";
 
-// Page that hosts the "dados completos" members grid. The grid's `xml` report id is encrypted
-// per session (a value copied from the browser fails with "Padding is invalid and cannot be
-// removed."), so it is read from this page's HTML right after logging in.
-const GRID_PAGE: &str = "/elementos/List?xml=elementos/elementos/dados-completos";
+// Every SIIE list screen is this prefix + a report path (e.g. elementos/progresso/lista-lobitos).
+// The grid's `xml` report id is encrypted per session (a value copied from the browser fails with
+// "Padding is invalid and cannot be removed."), so it is read from the page's HTML after login.
+const GRID_PAGE_PREFIX: &str = "/elementos/List?xml=";
+/// The "dados completos" members grid: access and member data are both read from it.
+pub const MEMBERS_REPORT: &str = "elementos/elementos/dados-completos";
 const GRID_API_MARKER: &str = "api/generic?xml=";
 const MAX_XML_MENTIONS: usize = 15;
 
@@ -55,8 +57,8 @@ const AGRUPAMENTO_NAME_FIELD: &str = "agrupdesc";
 // Identity columns, used only to find the logged-in person's own row (see `OwnId`).
 const NIF_FIELD: &str = "nif";
 const NIN_FIELD: &str = "nin";
-// Kendo page size when reading the whole grid, and a hard stop so a runaway loop can't hang a login.
-const SCOPE_PAGE_SIZE: u64 = 1000;
+// Kendo page size when reading a whole grid, and a hard stop so a runaway loop can't hang a login.
+const GRID_PAGE_SIZE: u64 = 1000;
 const MAX_GRID_ROWS: u64 = 200_000;
 // Fields of the token response that must never leave this module.
 const TOKEN_RESPONSE_SECRETS: &[&str] = &["access_token", "refresh_token"];
@@ -74,9 +76,9 @@ pub enum SiieError {
     #[error("A página da grelha redirecionou para o login: o SIIE não aceitou a sessão.")]
     GridPageIsLogin,
     #[error(
-        "Não foi encontrado \"{GRID_API_MARKER}\" em {GRID_PAGE}. Excertos da página com \"xml\": {0}"
+        "Não foi encontrado \"{GRID_API_MARKER}\" em {page}. Excertos da página com \"xml\": {mentions}"
     )]
-    ReportIdNotFound(String),
+    ReportIdNotFound { page: String, mentions: String },
     #[error("A grelha não devolveu JSON (sessão perdida, ou sem permissão para a ver).")]
     GridNotJson,
     #[error("A resposta da grelha tem um formato inesperado.")]
@@ -87,6 +89,12 @@ pub enum SiieError {
     TooManyRows,
     #[error("A coluna \"{field}\" da grelha tem um código que não é um número: \"{value}\".")]
     BadCode { field: &'static str, value: String },
+    #[error("Faltam colunas de elementos na grelha: {0}")]
+    MemberFieldMissing(String),
+    #[error("A coluna \"{0}\" da grelha tem uma data num formato inesperado.")]
+    BadDate(String),
+    #[error("Uma linha da grelha não tem NIN.")]
+    MissingNin,
 }
 
 /// Deliberately no `Debug`/`Clone`/`Serialize`, so it can't end up in logs by accident.
@@ -123,12 +131,16 @@ pub enum GridBody {
     },
 }
 
-/// Logs in, reads one page of the grid and returns it as-is.
-pub async fn fetch_grid(creds: Credentials, page_size: u32) -> Result<GridResponse, SiieError> {
+/// Logs in, reads one page of a report's grid and returns it as-is.
+pub async fn fetch_grid(
+    creds: Credentials,
+    xml_path: &str,
+    page_size: u32,
+) -> Result<GridResponse, SiieError> {
     let client = new_client()?;
     let login = login(&client, creds).await?;
-    let report_xml = report_xml(&client).await?;
-    let resp = grid_request(&client, &login.token, &report_xml, 0, page_size.into()).await?;
+    let report = open_report(&client, xml_path).await?;
+    let resp = grid_request(&client, &login.token, &report, 0, page_size.into(), None).await?;
     let login_profile = login.profile;
 
     let status = resp.status().as_u16();
@@ -359,29 +371,87 @@ pub async fn visibility(
     token: &SecretString,
     own: &OwnId,
 ) -> Result<Visibility, SiieError> {
-    let report_xml = report_xml(client).await?;
+    let report = open_report(client, MEMBERS_REPORT).await?;
     let mut vis = Visibility::default();
+    for_each_row(client, token, &report, None, |row| vis.add_row(row, own)).await?;
+    Ok(vis)
+}
+
+/// One list screen opened in this session: its page (sent as Referer) and its report id.
+pub struct Report {
+    page: String,
+    id: String,
+}
+
+/// Opens a list screen like a browser navigation (cookies only) and reads this session's
+/// encrypted report id from it. `xml_path` is the screen's report, e.g. `MEMBERS_REPORT`.
+pub async fn open_report(client: &Client, xml_path: &str) -> Result<Report, SiieError> {
+    let page = format!("{GRID_PAGE_PREFIX}{xml_path}");
+    let html = page_html(client, &page).await?;
+    match find_report_xml(&html) {
+        Some(id) => Ok(Report { page, id }),
+        None => Err(SiieError::ReportIdNotFound {
+            mentions: xml_mentions(&html),
+            page,
+        }),
+    }
+}
+
+/// Reads every row of a report, page by page, and hands each one to `f`. Returns the row count.
+/// `filter` is a Kendo filter object, passed through as-is.
+pub async fn for_each_row(
+    client: &Client,
+    token: &SecretString,
+    report: &Report,
+    filter: Option<&Value>,
+    mut f: impl FnMut(&Map<String, Value>) -> Result<(), SiieError>,
+) -> Result<u64, SiieError> {
     let mut skip = 0u64;
     loop {
-        let resp = grid_request(client, token, &report_xml, skip, SCOPE_PAGE_SIZE).await?;
-        if is_login_page(&resp) || !content_type(&resp).contains("json") {
-            return Err(SiieError::GridNotJson);
-        }
-        let (rows, total) = split_kendo(resp.json().await?)?;
+        let (rows, total) = grid_page(client, token, report, skip, GRID_PAGE_SIZE, filter).await?;
         for row in &rows {
-            vis.add_row(row.as_object().ok_or(SiieError::UnexpectedShape)?, own)?;
+            f(row.as_object().ok_or(SiieError::UnexpectedShape)?)?;
         }
 
         // Paging: stop on a short page or once `total` rows are read. Never silently truncate.
         let n = rows.len() as u64;
         skip += n;
-        if n < SCOPE_PAGE_SIZE || total.is_some_and(|t| skip >= t) {
-            return Ok(vis);
+        if n < GRID_PAGE_SIZE || total.is_some_and(|t| skip >= t) {
+            return Ok(skip);
         }
         if skip >= MAX_GRID_ROWS {
             return Err(SiieError::TooManyRows);
         }
     }
+}
+
+/// One page of a report as rows, plus the grid's total row count when it says so.
+pub async fn grid_page(
+    client: &Client,
+    token: &SecretString,
+    report: &Report,
+    skip: u64,
+    take: u64,
+    filter: Option<&Value>,
+) -> Result<(Vec<Value>, Option<u64>), SiieError> {
+    let resp = grid_request(client, token, report, skip, take, filter).await?;
+    if is_login_page(&resp) || !content_type(&resp).contains("json") {
+        return Err(SiieError::GridNotJson);
+    }
+    split_kendo(resp.json().await?)
+}
+
+/// A SIIE page's HTML, fetched like a browser navigation. `path` starts with `/`.
+pub async fn page_html(client: &Client, path: &str) -> Result<String, SiieError> {
+    let resp = client
+        .get(format!("{BASE}{path}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    if is_login_page(&resp) {
+        return Err(SiieError::GridPageIsLogin);
+    }
+    Ok(resp.text().await?)
 }
 
 /// The secção a row belongs to, or None (no secção, e.g. agrupamento staff).
@@ -415,7 +485,10 @@ fn own_other_identifier(
 /// An organisation code column as a number: "0053", 53 and " 53 " are all 53. All-zero
 /// placeholders and empty values are None. Anything else non-numeric is an error rather than
 /// silently dropped (the message holds the code, never member data).
-fn field_code(row: &Map<String, Value>, field: &'static str) -> Result<Option<i16>, SiieError> {
+pub(crate) fn field_code(
+    row: &Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<i16>, SiieError> {
     let Some(text) = row.get(field).and_then(field_text) else {
         return Ok(None);
     };
@@ -441,21 +514,25 @@ fn field_text(v: &Value) -> Option<String> {
 async fn grid_request(
     client: &Client,
     token: &SecretString,
-    report_xml: &str,
+    report: &Report,
     skip: u64,
     take: u64,
+    filter: Option<&Value>,
 ) -> Result<reqwest::Response, SiieError> {
     // Kendo DataSource read params: the grid's parameterMap does JSON.stringify(data) and jQuery
     // appends it as a bare query component (no `key=`). Built by hand since `.query()` adds a key.
     let page = skip / take + 1;
-    let params =
-        format!(r#"{{"take":{take},"skip":{skip},"page":{page},"pageSize":{take},"sort":[]}}"#)
-            .replace('"', "%22");
-    let url = format!("{BASE}/web/api/generic?xml={report_xml}&{params}");
+    let filter = filter.map_or(String::new(), |f| format!(r#","filter":{f}"#));
+    let params = format!(
+        r#"{{"take":{take},"skip":{skip},"page":{page},"pageSize":{take},"sort":[]{filter}}}"#
+    )
+    .replace('"', "%22")
+    .replace(' ', "%20");
+    let url = format!("{BASE}/web/api/generic?xml={}&{params}", report.id);
     Ok(client
         .get(&url)
         .header("X-Requested-With", "XMLHttpRequest")
-        .header(header::REFERER, format!("{BASE}{GRID_PAGE}"))
+        .header(header::REFERER, format!("{BASE}{}", report.page))
         .bearer_auth(token.expose_secret())
         .send()
         .await?)
@@ -491,21 +568,6 @@ fn content_type(resp: &reqwest::Response) -> String {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned()
-}
-
-/// Opens the grid page like a browser navigation (cookies only) and returns this session's
-/// encrypted report id, ready to drop into the grid URL.
-async fn report_xml(client: &Client) -> Result<String, SiieError> {
-    let resp = client
-        .get(format!("{BASE}{GRID_PAGE}"))
-        .send()
-        .await?
-        .error_for_status()?;
-    if is_login_page(&resp) {
-        return Err(SiieError::GridPageIsLogin);
-    }
-    let html = resp.text().await?;
-    find_report_xml(&html).ok_or_else(|| SiieError::ReportIdNotFound(xml_mentions(&html)))
 }
 
 /// Takes the value after the first "api/generic?xml=" in the page.

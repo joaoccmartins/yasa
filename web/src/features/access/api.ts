@@ -1,12 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api-client'
 import { authKeys } from '../auth/api'
-import { accountListSchema, eventListSchema, type InviteInput, type Role, type Status } from './schema'
+import {
+  accountListSchema,
+  eventListSchema,
+  importLogListSchema,
+  type InviteInput,
+  type Role,
+  type Status,
+} from './schema'
 
 export const accessKeys = {
   all: ['access'] as const,
   accounts: ['access', 'accounts'] as const,
   events: ['access', 'events'] as const,
+  imports: ['access', 'imports'] as const,
 }
 
 export function useAccounts() {
@@ -20,6 +28,13 @@ export function useEvents() {
   return useQuery({
     queryKey: accessKeys.events,
     queryFn: async () => eventListSchema.parse(await api('/admin/events')),
+  })
+}
+
+export function useImports() {
+  return useQuery({
+    queryKey: accessKeys.imports,
+    queryFn: async () => importLogListSchema.parse(await api('/admin/imports')),
   })
 }
 

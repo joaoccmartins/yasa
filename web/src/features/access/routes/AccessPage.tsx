@@ -6,6 +6,7 @@ import type { Me } from '../../auth/schema'
 import { useAccounts, useUpdateAccount } from '../api'
 import { InviteForm } from '../components/InviteForm'
 import { EventLog } from '../components/EventLog'
+import { ImportLog } from '../components/ImportLog'
 import type { Account } from '../schema'
 
 const SKELETON_ROWS = 3
@@ -88,6 +89,7 @@ export function AccessPage({ me }: { me: Me }) {
       )}
 
       <EventLog />
+      <ImportLog />
     </section>
   )
 }

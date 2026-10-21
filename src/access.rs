@@ -3,14 +3,14 @@
 //!
 //! - At login, `claim_refresh` decides whether the access must be re-read (never read, or
 //!   expired) and, if so, marks it 'running' so two logins don't read twice.
-//! - `read_access` then runs after the login response is sent (see `in_background`). It holds
-//!   the SIIE session only in memory and drops it when done.
+//! - `read_access` then runs after the login response is sent (see `members::sync`, which owns
+//!   the SIIE session, only in memory, and drops it once the member imports are done too).
 //! - Until a re-read finishes, the previous grants stay in force (stale while refreshing).
 //! - The expiry is not stored: `refreshed_at + ACCESS_VALIDITY_DAYS`, so changing the setting
 //!   applies to everyone at once.
 
 use reqwest::Client;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -19,12 +19,12 @@ use crate::{
     AppState,
     admin::log_event,
     auth::{Method, login_key},
-    siie::{self, LoginOk, OwnId, Visibility},
+    siie::{self, OwnId, Visibility},
 };
 
 // A run that started longer ago than this died with its function (maxDuration is 300 s on
-// Hobby), so the next login may claim it again.
-const STALE_RUN_MINUTES: i32 = 10;
+// Hobby), so the next login may claim it again. Member imports use the same rule.
+pub(crate) const STALE_RUN_MINUTES: i32 = 10;
 
 /// What a login found out about the account's access.
 pub enum Claim {
@@ -93,21 +93,18 @@ pub async fn claim_refresh(
 /// The background read: whole grid -> structure + grants + level. Never panics the caller;
 /// failures are written to `account_access` so the Painel can show them.
 pub async fn read_access(
-    state: AppState,
+    state: &AppState,
     account_id: Uuid,
     method: Method,
-    client: Client,
-    login: LoginOk,
+    client: &Client,
+    token: &SecretString,
     own: OwnId,
 ) {
-    let read = siie::visibility(&client, &login.token, &own).await;
-    // The SIIE session ends here, before any DB work.
-    drop(login);
-    drop(client);
+    let read = siie::visibility(client, token, &own).await;
     drop(own);
 
     let failure = match read {
-        Ok(vis) => match store(&state, account_id, method, vis).await {
+        Ok(vis) => match store(state, account_id, method, vis).await {
             Ok(()) => return,
             Err(e) => {
                 // Logged for us (no personal data in SQL errors here: only codes and ids).

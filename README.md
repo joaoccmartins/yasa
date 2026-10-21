@@ -4,7 +4,8 @@ A data analysis tool for scouting data from SIIE (https://siie.escutismo.pt). Yo
 your own SIIE account, and YASA shows only the data that account gives you access to.
 
 Status: infrastructure and accounts are done (invite-only, SIIE-verified logins, scope from
-SIIE, Access page for admins). Data sync, anonymization and charts come next.
+SIIE, Access page for admins). Members are imported per agrupamento, pseudonymised, with their
+history. Progress (etapas, especialidades), cargos, health and charts come next.
 
 ## Architecture
 
@@ -110,11 +111,12 @@ Endpoints:
 | Route | Who | What |
 | --- | --- | --- |
 | `POST /api/auth/login`, `POST /api/auth/logout` | anyone | see above |
-| `GET /api/auth/me` | logged in | `{accountId, label, role, access: {level, status, refreshedAt, validUntil, error, agrupamentos[], nucleos[], regioes[]}}` or 401 |
+| `GET /api/auth/me` | logged in | `{accountId, label, role, access: {level, status, refreshedAt, validUntil, error, agrupamentos[], nucleos[], regioes[]}, imports[]}` or 401 (see "Members") |
 | `GET /api/admin/accounts` | admin | everyone with access, last login, access level, status, validity, agrupamento/núcleo/região counts |
 | `POST /api/admin/accounts` | admin | invite `{method, identifier, label, role}`; 409 if already invited |
 | `PATCH /api/admin/accounts/{id}` | admin | `{status?, role?}`; refuses to leave YASA without an active admin |
 | `GET /api/admin/events` | admin | the latest 100 events, newest first |
+| `GET /api/admin/imports` | admin | the latest 100 member imports: agrupamento, who started it, status, counts |
 
 **History.** `account_events` records invites, logins (with the access level and counts they got),
 enable/disable, role changes and identifier links, each with who did it (`actor_id`; null = the
@@ -134,6 +136,104 @@ Access is read from the grid columns `agrupamento`, `nucleo` and `regiao` (const
 of [src/siie.rs](src/siie.rs)). If SIIE renames them, login fails with an error that lists the
 grid's real field names.
 
+## Members
+
+A pseudonymised copy of the "dados completos" grid (`siie::MEMBERS_REPORT`), shared by everyone:
+whoever logs in fills it with what their SIIE access shows, and anyone whose grants cover an
+agrupamento reads the same rows. Code in [src/members.rs](src/members.rs), migration 0005.
+
+**Imports, per agrupamento.** At login, each agrupamento the account holds **whole** whose last
+import is older than `MEMBERS_SYNC_DAYS` (env var, default 1) gets a `member_imports` row
+(`queued`). The login's background task (after the access read, if one was due) imports them one
+at a time with the same SIIE session. Each asks SIIE for that agrupamento's rows only (Kendo filter
+on `agrupamento`, which SIIE honours), and is written in its own transaction. One failing doesn't
+stop the rest.
+
+- A secção-only grant never queues an import: that reader sees part of the agrupamento, so
+  everyone else would be recorded as an exit.
+- A partial unique index allows one queued or running import per agrupamento, so two logins
+  don't import it twice. One older than 10 minutes died with its function and is failed by the
+  next login, which can then queue it again.
+- If SIIE ever returned rows of another agrupamento, the import is refused.
+- Rows with no agrupamento (a handful of núcleo/região staff) are not imported: no import or
+  grant covers them.
+
+**Alerts.** `/api/auth/me` returns `imports`: per granted agrupamento, its latest import while
+queued or running, and for 24 h after it finishes. The Painel shows them to everyone who sees that
+agrupamento ("A importar os elementos do SIIE…", then the counts or the error) and polls every 3 s
+while any is active. Admins see the last 100 imports on the Acessos page.
+
+**What is kept.** Everything not in this table is dropped in memory, as the row is parsed
+(`members::parse`, allowlist `MEMBER_KEYS`). A missing column fails the import.
+
+| Grid keys | Kept as | Table |
+| --- | --- | --- |
+| `nin` | key | `members` |
+| `totem` | SIIE's totem, or one derived from the NIN (below) | `members` |
+| `siglasexo`, `situacao`, `categoria`, `ordem`, `seccao`, `ccartao` | as SIIE writes them (`ordem` is the categoria's step) | `members` |
+| `datanascimento` | **month + year only** (1st of the month) | `members` |
+| `dataadmissao`, `datapromessa` | dates | `members` |
+| `agrupamento`, `nucleo`, `regiao`, `elemnucleo`, `elemregiao`, `elemNacional` | codes | `members` |
+| `profissao`, `formador`, `diretorformacao`, `imagensnao` | as is | `members` |
+| `cp1`, `cp2`, `localidade`, `codigopostal`, `naturalidade` | CP4, CP3, places. **No street**, no history | `member_addresses` |
+| `deficiencia`, `sigladeficiencia` | as is, no history (more health columns: see below) | `member_health` |
+
+**The other reports.** Each import also reads its agrupamento from these, all described as data
+in [src/member_reports.rs](src/member_reports.rs) (`COLUMN_REPORTS`, `RECORD_REPORTS`): adding a
+report is one entry there plus a migration. Only the NIN, the agrupamento and the listed columns
+are read from each row; everything else is dropped as it is parsed, and a missing column fails
+the import.
+
+| Report | Kept | Table |
+| --- | --- | --- |
+| `elementos/progresso/lista-{lobitos,exploradores,pioneiros,caminheiros}` | dates per secção: `l`/`e`/`p`/`c` + `adesao`, `etapa1-3`, `anilhamerito` | `member_progress` |
+| `elementos/vidaescutista/lista-geral` | the promessa per secção (`promessalobito` ... `promessadirigente`) | `member_progress` |
+| `elementos/elementos/lista-historico` | previous agrupamentos (`histagrupamento`, a sorted list; SIIE has no dates) | `member_progress` |
+| `elementos/elementos/saida-elementos-por-ano` | `ano_saida`, `ultimoano_censos` of former members | `member_progress` |
+| `elementos/dadossaude/dados-saude` | the 7 condition flags and the tetanus vaccine date. **No descriptions, no SNS number**, no history | `member_health` |
+| `elementos/especialidades/lista-*` | especialidade, date, secção (from which report) | `member_especialidades` |
+| `elementos/cargos/cargos-ativos` | every cargo, past and current: cargo, sigla, unit (`agrup`), start, end, active | `member_cargos` |
+| `elementos/cursos/lista-cursos` | curso, sigla, date (`datadoc`). No ordem de serviço | `member_cursos` |
+| `elementos/actividades/atividades-elementos` | one row per participation: activity id, tipo, nível, dates, noites, noites de campo. No description or place | `member_atividades` |
+| `elementos/justica/lista-justica` | **awards only** (allowlist `AWARDS`), with type and date. Sanctions are never read | `member_distincoes` |
+| `elementos/habilitacoes/lista-habilitacoes` | education level (free text) | `member_habilitacoes` |
+
+- Per-member tables (`member_progress`, `member_health`) get a row for every member of the
+  import. A member a report no longer lists gets nulls there (SIIE cleared it).
+- Record tables are keyed by SIIE's id for the record (grid `rid`) and keep the agrupamento it
+  was listed under (`import_agrupamento`). Records are stored for any member YASA knows (an
+  activity can be listed under an agrupamento the member has since left), and an import only
+  removes records listed under its own agrupamento. Cargos are also only removed when they are
+  in that agrupamento (`agrup`): a narrower reader may not see a member's núcleo or região cargos.
+- `saida-elementos-por-ano` has no agrupamento column, so it is read whole once per run and
+  matched by NIN.
+
+Not imported: `formacao/formacao/formacao` (only a member list), tutores (the user chose not to
+keep tutor links), `noites-campo` (derivable from activities), `horas-mar`/`horas-voo` and the
+questionários (empty or not a plain grid), the censos lists (need a search form), quotas,
+movimentos, diversos.
+
+Dropped: `nome`, `nif`, `cc`, `morada`, every phone and e-mail, parents and encarregado de
+educação, `notas`, `observacoes`, `www`, `registocriminal*`, `tutor`, `florlis*`, `rid`, `cid`,
+`uploadgroup`, and duplicates (`idade`, `ano*`, `bcartao`, `cartaotxt`, `expr1`, `sigla*`
+except `siglasexo`).
+
+**Totem.** SIIE's own totem when set. Otherwise, with h = SHA-256(NIN):
+`ANIMAIS[h[0] % 64] + " " + ADJETIVOS[h[1] % 64]` (the lists are in [src/members.rs](src/members.rs)).
+Same NIN, same totem. Duplicates are expected (4096 combinations) and fine: the NIN is the key.
+
+**History.** `member_changes` gets one row per changed field per import (old and new value);
+`member_progress` fields are named `progresso.<column>`, e.g. a new etapa is
+`progresso.eetapa2: null -> 2025-06-01`. Progress seen for the first time isn't logged, since
+its dates already are its history. Especialidades are `especialidade.<seccao_tipo>.<name>`
+(date added, changed, or gone). Records are `<label>.<id>` (added / gone: `cargo`, `curso`,
+`atividade`, `distincao`, `habilitacao`) and `<label>.<id>.<column>` (changed). None of these are
+logged for a member seen for the first time. Health has no history.
+Entries, exits and comebacks are changes of `present`: first sighting `null -> true` (only that
+row; the first values are the old_value of each field's first change), gone from its
+agrupamento's grid `true -> false`, back `false -> true`. Someone who moves shows as an exit from
+the old agrupamento and, once the new one is imported, an `agrupamento` change plus a comeback.
+
 ## Local development
 
 Needs Rust, Node 24 and a Postgres (local, or a Neon dev branch).
@@ -146,8 +246,12 @@ cargo run --bin dev               # API on http://127.0.0.1:3000
 cd web && npm install && npm run dev   # UI on http://localhost:5173, proxies /api to :3000
 ```
 
-The original POC grid explorer still runs with `cargo run --bin poc` (http://127.0.0.1:3000,
-so stop `dev` first).
+The POC grid explorer runs with `cargo run --bin poc` (http://127.0.0.1:3000, so stop `dev`
+first). Its modes: **profile** summarises a whole report per column (types, fill, masked shapes,
+values only when many rows share them) and tests whether SIIE honours a server-side
+`agrupamento` filter; **links** lists a page's links, `xml=` report paths, Kendo templates and
+column fields; **raw** shows one page of JSON. Profile and links never print raw rows, so their
+output can be shared; raw shows personal data.
 
 Checks (the same as CI):
 
@@ -175,7 +279,8 @@ One-time setup:
 
 After that, every push to `main` deploys to production and other branches get preview URLs.
 Migrations are never run by the function itself. Run `cargo run --bin migrate` before deploying
-code that needs a new migration.
+code that needs a new migration. The migrate binary embeds `migrations/`; [build.rs](build.rs)
+rebuilds it when that folder changes, so a new migration is never silently skipped.
 
 ### Known risks
 
@@ -195,7 +300,8 @@ All SIIE constants are at the top of [src/siie.rs](src/siie.rs):
 | `TOKEN_PATH` | Login endpoint (`/api/logintoken`) |
 | `USER_FIELD`, `PASS_FIELD`, `ADAUTH_FIELD` | Field names `TokenLogin()` posts. `ADAUTH_FIELD` is `true` for Loja Escutista (NIF) and `false` for SIIE (NIN) |
 | `LOGIN_PAGE`, `LOGIN_PATH` | Login page URL, and the path used to detect a bounce to login |
-| `GRID_PAGE` | Page hosting the grid (used by the POC) |
+| `MEMBER_KEYS` (in [src/members.rs](src/members.rs)) | The member columns kept; a rename fails the import and lists the missing keys |
+| `GRID_PAGE_PREFIX`, `MEMBERS_REPORT` | List screens are `/elementos/List?xml=<report>`; `MEMBERS_REPORT` is the dados completos grid |
 | `GRID_API_MARKER` | Text searched in that page to find the encrypted report id |
 | `USER_AGENT` | Desktop browser UA sent on every request (the site has bot detection) |
 

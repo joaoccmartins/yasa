@@ -3,6 +3,8 @@
 pub mod access;
 pub mod admin;
 pub mod auth;
+pub mod member_reports;
+pub mod members;
 pub mod siie;
 
 use std::{future::Future, sync::Arc};
@@ -20,7 +22,11 @@ const MAX_DB_CONNECTIONS: u32 = 3;
 // How long an access read from SIIE stays valid, in days, unless ACCESS_VALIDITY_DAYS says
 // otherwise. A login after that re-reads it (in the background).
 const DEFAULT_ACCESS_VALIDITY_DAYS: i32 = 7;
-const MAX_ACCESS_VALIDITY_DAYS: i32 = 365;
+// How old an agrupamento's last member import may get, in days, unless MEMBERS_SYNC_DAYS says
+// otherwise. A login after that imports it again (in the background).
+const DEFAULT_MEMBERS_SYNC_DAYS: i32 = 1;
+// Upper bound for both settings.
+const MAX_DAYS_SETTING: i32 = 365;
 // HMAC-SHA256 key: 32 bytes is the full hash width, shorter would weaken it.
 const MIN_LOGIN_KEY_BYTES: usize = 32;
 
@@ -33,6 +39,8 @@ pub struct AppState {
     pub secure_cookies: bool,
     /// Days an access read from SIIE stays valid (ACCESS_VALIDITY_DAYS).
     pub access_validity_days: i32,
+    /// Days before an agrupamento's members are imported again (MEMBERS_SYNC_DAYS).
+    pub members_sync_days: i32,
 }
 
 impl AppState {
@@ -54,25 +62,28 @@ impl AppState {
             ));
         }
 
-        // Optional: unset means the default; anything else must be a whole number of days.
-        let access_validity_days = match std::env::var("ACCESS_VALIDITY_DAYS") {
-            Err(_) => DEFAULT_ACCESS_VALIDITY_DAYS,
-            Ok(v) => v
-                .trim()
-                .parse()
-                .ok()
-                .filter(|d| (1..=MAX_ACCESS_VALIDITY_DAYS).contains(d))
-                .ok_or(format!(
-                    "ACCESS_VALIDITY_DAYS must be a number of days from 1 to {MAX_ACCESS_VALIDITY_DAYS}"
-                ))?,
-        };
-
         Ok(Self {
             db,
             login_key_secret: Arc::new(key.into()),
             secure_cookies,
-            access_validity_days,
+            access_validity_days: days_env("ACCESS_VALIDITY_DAYS", DEFAULT_ACCESS_VALIDITY_DAYS)?,
+            members_sync_days: days_env("MEMBERS_SYNC_DAYS", DEFAULT_MEMBERS_SYNC_DAYS)?,
         })
+    }
+}
+
+/// Optional days setting: unset means `default`; anything else must be 1 to MAX_DAYS_SETTING.
+fn days_env(name: &str, default: i32) -> Result<i32, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(v) => v
+            .trim()
+            .parse()
+            .ok()
+            .filter(|d| (1..=MAX_DAYS_SETTING).contains(d))
+            .ok_or(format!(
+                "{name} must be a number of days from 1 to {MAX_DAYS_SETTING}"
+            )),
     }
 }
 
@@ -99,5 +110,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/accounts", get(admin::list).post(admin::invite))
         .route("/api/admin/accounts/{id}", patch(admin::update))
         .route("/api/admin/events", get(admin::events))
+        .route("/api/admin/imports", get(admin::imports))
         .with_state(state)
 }

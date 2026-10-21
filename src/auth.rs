@@ -7,7 +7,9 @@
 //! 2. HMAC(identifier) must match an active, invited account. SIIE goes first so this endpoint
 //!    can't be used to probe which NIFs are invited. Nothing is stored about uninvited people.
 //! 3. Access: if never read or older than ACCESS_VALIDITY_DAYS, the members grid is read in the
-//!    background with this same SIIE session (see access.rs). The login doesn't wait for it.
+//!    background with this same SIIE session (see access.rs). Then the account's agrupamentos
+//!    whose members are older than MEMBERS_SYNC_DAYS are imported, one at a time (members.rs).
+//!    The login doesn't wait for either.
 //! 4. A session starts. The cookie ends with the browser; the DB caps it at SESSION_HOURS.
 //!    The login is recorded in account_events.
 
@@ -28,7 +30,7 @@ use crate::{
     AppState,
     access::{self, Claim},
     admin::log_event,
-    in_background,
+    in_background, members,
     siie::{self, SiieError},
 };
 
@@ -173,24 +175,44 @@ pub async fn login(
         return Err(ApiError::new(StatusCode::FORBIDDEN, NO_ACCESS));
     };
 
-    // 3. Access: re-read in the background only if never read or expired. The SIIE client and
-    //    token move into that task; otherwise they are dropped at the end of this request.
+    // 3. Access and member imports, in the background. The access is re-read only if never
+    //    read or expired. Imports are queued now when the access stands (the Painel shows them
+    //    straight away), or after the read otherwise, since a first read is what creates the
+    //    grants. The SIIE client and token move into that task; if there is nothing to do, they
+    //    are dropped at the end of this request.
     let claim = access::claim_refresh(&s.db, account_id, s.access_validity_days)
         .await
         .map_err(db_error)?;
-    if let Claim::Started = claim {
-        let own = siie::OwnId {
+    let reading = matches!(claim, Claim::Started);
+    let queued = if reading {
+        Vec::new()
+    } else {
+        members::queue(&s.db, account_id, s.members_sync_days)
+            .await
+            .map_err(db_error)?
+    };
+    let imports = queued.len();
+    if reading || !queued.is_empty() {
+        let own = reading.then_some(siie::OwnId {
             loja_escutista: matches!(b.method, Method::Loja),
             identifier: id,
-        };
-        let task = access::read_access(s.clone(), account_id, b.method, client, siie_login, own);
+        });
+        let task = members::sync(
+            s.clone(),
+            account_id,
+            b.method,
+            client,
+            siie_login,
+            own,
+            queued,
+        );
         in_background(vercel.as_ref().map(|Extension(v)| v), task);
     }
 
     // 4. Session + login event in one transaction, then answer right away.
     let token = new_token();
     let mut tx = s.db.begin().await.map_err(db_error)?;
-    let detail = json!({ "access": claim.as_str() });
+    let detail = json!({ "access": claim.as_str(), "imports": imports });
     log_event(&mut *tx, Some(account_id), account_id, "login", detail)
         .await
         .map_err(db_error)?;
@@ -277,11 +299,13 @@ fn client_ip(headers: &HeaderMap) -> Option<String> {
 /// the login page). The Painel polls this while the access is being read.
 pub async fn me(State(s): State<AppState>, acc: CurrentAccount) -> Result<Response, ApiError> {
     let access = access::summary(&s, acc.id).await.map_err(db_error)?;
+    let imports = members::summary(&s.db, acc.id).await.map_err(db_error)?;
     let body = json!({
         "accountId": acc.id,
         "label": acc.label,
         "role": acc.role,
         "access": access,
+        "imports": imports,
     });
     Ok(Json(body).into_response())
 }

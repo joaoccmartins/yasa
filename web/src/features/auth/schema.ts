@@ -36,11 +36,32 @@ export const accessSchema = z.object({
 })
 export type Access = z.infer<typeof accessSchema>
 
+// queued: waiting its turn · running: being imported now · done / failed: finished
+export const importStatusSchema = z.enum(['queued', 'running', 'done', 'failed'])
+export type ImportStatus = z.infer<typeof importStatusSchema>
+
+// The latest member import of one granted agrupamento, while active or for 24h after it ends.
+export const importSchema = z.object({
+  agrupamento: z.number(),
+  name: z.string().nullable(),
+  status: importStatusSchema,
+  // Unix seconds.
+  queuedAt: z.number(),
+  startedAt: z.number().nullable(),
+  finishedAt: z.number().nullable(),
+  members: z.number().nullable(),
+  changes: z.number().nullable(),
+  exits: z.number().nullable(),
+  error: z.string().nullable(),
+})
+export type MemberImport = z.infer<typeof importSchema>
+
 export const meSchema = z.object({
   accountId: z.string(),
   label: z.string(),
   role: z.enum(['member', 'admin']),
   access: accessSchema,
+  imports: z.array(importSchema),
 })
 export type Me = z.infer<typeof meSchema>
 

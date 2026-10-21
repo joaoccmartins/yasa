@@ -20,9 +20,15 @@ export function useMe() {
     },
     retry: false,
     staleTime: Infinity,
-    // While the access is being read in the background, check again every few seconds.
-    refetchInterval: (query) =>
-      query.state.data?.access.status === 'running' ? ACCESS_POLL_MS : false,
+    // While the access is being read or members imported in the background, check again
+    // every few seconds.
+    refetchInterval: (query) => {
+      const me = query.state.data
+      const busy =
+        me?.access.status === 'running' ||
+        me?.imports.some((i) => i.status === 'queued' || i.status === 'running')
+      return busy ? ACCESS_POLL_MS : false
+    },
   })
 }
 

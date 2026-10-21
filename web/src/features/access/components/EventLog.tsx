@@ -73,17 +73,7 @@ function describe(e: AccountEvent): string {
     case 'invited':
       return `${actor} convidou ${who} como ${roleName(d.role)} (entra com ${kind}).`
     case 'login':
-      switch (d.access) {
-        case 'started':
-          return `${who} entrou; o acesso começou a ser lido do SIIE.`
-        case 'already_running':
-          return `${who} entrou; o acesso já estava a ser lido do SIIE.`
-        case 'fresh':
-          return `${who} entrou (acesso dentro da validade).`
-        default:
-          // Logins from before access was read in the background carried the counts.
-          return d.accessLevel ? `${who} entrou com ${levelAndCounts(d)}.` : `${who} entrou.`
-      }
+      return loginText(who, d) + importsText(d)
     case 'access_refreshed':
       return `O acesso de ${who} foi lido do SIIE: ${levelAndCounts(d)}.`
     case 'access_failed':
@@ -97,6 +87,28 @@ function describe(e: AccountEvent): string {
     case 'identifier_linked':
       return `O ${kind} de ${who} foi associado à conta (encontrado na grelha do SIIE).`
   }
+}
+
+/** The login sentence, by what happened to the access. */
+function loginText(who: string, d: Record<string, unknown>) {
+  switch (d.access) {
+    case 'started':
+      return `${who} entrou; o acesso começou a ser lido do SIIE.`
+    case 'already_running':
+      return `${who} entrou; o acesso já estava a ser lido do SIIE.`
+    case 'fresh':
+      return `${who} entrou (acesso dentro da validade).`
+    default:
+      // Logins from before access was read in the background carried the counts.
+      return d.accessLevel ? `${who} entrou com ${levelAndCounts(d)}.` : `${who} entrou.`
+  }
+}
+
+/** " 3 agrupamentos em fila para importar." when the login queued member imports. */
+function importsText(d: Record<string, unknown>) {
+  return typeof d.imports === 'number' && d.imports > 0
+    ? ` ${count(d.imports, 'agrupamento', 'agrupamentos')} em fila para importar.`
+    : ''
 }
 
 /** "1 núcleo" / "3 núcleos"; "?" when an older event lacks the number. */

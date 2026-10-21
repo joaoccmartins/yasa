@@ -1,6 +1,7 @@
 import type { Me } from '../../auth/schema'
 import { EmptyState } from '../../../ui/EmptyState'
 import { AccessSummary } from '../components/AccessSummary'
+import { ImportsNotice } from '../components/ImportsNotice'
 
 /** Dashboards land here once data sync exists. */
 export function HomePage({ me }: { me: Me }) {
@@ -9,6 +10,7 @@ export function HomePage({ me }: { me: Me }) {
   return (
     <div className="page">
       <AccessSummary access={access} />
+      <ImportsNotice imports={me.imports} />
       {/* Before the first read, the summary's notice says what's happening; nothing to add. */}
       {hasRead &&
         (access.agrupamentos.length === 0 ? (

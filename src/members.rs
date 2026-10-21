@@ -600,6 +600,13 @@ async fn import_one(
         .map_err(|e| e.to_string())?;
     }
 
+    // dados completos lists inactive members too, so an agrupamento is never empty. No rows means
+    // SIIE answered wrongly, and storing that would record everyone as an exit.
+    if rows.is_empty() {
+        return Err(format!(
+            "O SIIE não devolveu nenhum elemento do agrupamento {code}; a importação foi recusada."
+        ));
+    }
     // If SIIE ever ignored the filter, other agrupamentos' members would be marked as exits and
     // stored under this import. Refuse instead.
     if rows

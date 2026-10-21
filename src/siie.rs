@@ -81,8 +81,8 @@ pub enum SiieError {
     ReportIdNotFound { page: String, mentions: String },
     #[error("A grelha não devolveu JSON (sessão perdida, ou sem permissão para a ver).")]
     GridNotJson,
-    #[error("A resposta da grelha tem um formato inesperado.")]
-    UnexpectedShape,
+    #[error("A resposta da grelha tem um formato inesperado: {0}.")]
+    UnexpectedShape(String),
     #[error("Faltam as colunas {SCOPE_FIELDS:?} na grelha. Colunas presentes: {0}")]
     ScopeFieldMissing(String),
     #[error("A grelha tem mais de {MAX_GRID_ROWS} linhas; a leitura foi recusada.")]
@@ -95,6 +95,12 @@ pub enum SiieError {
     BadDate(String),
     #[error("Uma linha da grelha não tem NIN.")]
     MissingNin,
+    /// Any error while reading a report, with the report it came from.
+    #[error("{report}: {source}")]
+    InReport {
+        report: String,
+        source: Box<SiieError>,
+    },
 }
 
 /// Deliberately no `Debug`/`Clone`/`Serialize`, so it can't end up in logs by accident.
@@ -398,8 +404,23 @@ pub async fn open_report(client: &Client, xml_path: &str) -> Result<Report, Siie
 }
 
 /// Reads every row of a report, page by page, and hands each one to `f`. Returns the row count.
-/// `filter` is a Kendo filter object, passed through as-is.
+/// `filter` is a Kendo filter object, passed through as-is. Errors name the report.
 pub async fn for_each_row(
+    client: &Client,
+    token: &SecretString,
+    report: &Report,
+    filter: Option<&Value>,
+    f: impl FnMut(&Map<String, Value>) -> Result<(), SiieError>,
+) -> Result<u64, SiieError> {
+    read_rows(client, token, report, filter, f)
+        .await
+        .map_err(|e| SiieError::InReport {
+            report: report.page.trim_start_matches(GRID_PAGE_PREFIX).to_owned(),
+            source: Box::new(e),
+        })
+}
+
+async fn read_rows(
     client: &Client,
     token: &SecretString,
     report: &Report,
@@ -410,7 +431,10 @@ pub async fn for_each_row(
     loop {
         let (rows, total) = grid_page(client, token, report, skip, GRID_PAGE_SIZE, filter).await?;
         for row in &rows {
-            f(row.as_object().ok_or(SiieError::UnexpectedShape)?)?;
+            let row = row
+                .as_object()
+                .ok_or_else(|| SiieError::UnexpectedShape(format!("linha {}", shape(row))))?;
+            f(row)?;
         }
 
         // Paging: stop on a short page or once `total` rows are read. Never silently truncate.
@@ -548,10 +572,44 @@ fn split_kendo(body: Value) -> Result<(Vec<Value>, Option<u64>), SiieError> {
                 .find_map(|k| o.get(*k).and_then(Value::as_u64));
             match o.remove("Data").or_else(|| o.remove("data")) {
                 Some(Value::Array(rows)) => Ok((rows, total)),
-                _ => Err(SiieError::UnexpectedShape),
+                // An empty grid (e.g. an agrupamento with no rows in a small report): SIIE sends
+                // a null Data, or no Data with a zero count. Anything else without Data, such as
+                // an error object, stays an error so it can't pass for "no rows".
+                Some(Value::Null) => Ok((Vec::new(), total)),
+                None if total == Some(0) => Ok((Vec::new(), total)),
+                data => {
+                    if let Some(d) = data {
+                        o.insert("Data".into(), d);
+                    }
+                    Err(SiieError::UnexpectedShape(shape(&Value::Object(o))))
+                }
             }
         }
-        _ => Err(SiieError::UnexpectedShape),
+        other => Err(SiieError::UnexpectedShape(shape(&other))),
+    }
+}
+
+/// A response's form for error messages: top-level keys and JSON types, never values.
+/// {"Data": null, "Message": "x"} -> "{Data: null, Message: string}".
+fn shape(v: &Value) -> String {
+    let kind = |v: &Value| match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    match v {
+        Value::Object(o) => {
+            let keys: Vec<String> = o
+                .iter()
+                .take(10)
+                .map(|(k, v)| format!("{k}: {}", kind(v)))
+                .collect();
+            format!("{{{}}}", keys.join(", "))
+        }
+        other => kind(other).to_owned(),
     }
 }
 
@@ -687,6 +745,21 @@ mod tests {
         assert_eq!((rows.len(), total), (0, Some(0)));
         let (rows, total) = split_kendo(json!([{"a": 1}, {"a": 2}])).unwrap();
         assert_eq!((rows.len(), total), (2, None));
+        // Empty grids.
+        assert_eq!(
+            split_kendo(json!({"Data": null, "Total": 0}))
+                .unwrap()
+                .0
+                .len(),
+            0
+        );
+        assert_eq!(split_kendo(json!({"Total": 0})).unwrap().0.len(), 0);
+        // Not a grid: an error naming keys and types only, never values.
+        let e = split_kendo(json!({"Message": "segredo", "Data": 3})).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "A resposta da grelha tem um formato inesperado: {Data: number, Message: string}."
+        );
         assert!(split_kendo(json!({"nope": 1})).is_err());
     }
 

@@ -12,8 +12,34 @@ export const yearRowSchema = z.object({
   caminheiros: z.number(),
   dirigentes: z.number(),
   semRegisto: z.number(),
+  // Of each secção's count, how many were placed by age (no dated record that year): estimates.
+  byAge: z.object({
+    lobitos: z.number(),
+    exploradores: z.number(),
+    pioneiros: z.number(),
+    caminheiros: z.number(),
+  }),
 })
 export type YearRow = z.infer<typeof yearRowSchema>
+
+// Progresso quality of one secção this ano escutista: of its active members now, how many have
+// its adesão registered, and of those past aspirante, how many have a promessa registered.
+export const qualitySchema = z.object({
+  tipo: z.number(),
+  members: z.number(),
+  withAdesao: z.number(),
+  promessaDue: z.number(),
+  withPromessa: z.number(),
+})
+export type Quality = z.infer<typeof qualitySchema>
+
+// The same, all secções together, for each agrupamento the account holds whole.
+export const qualityRowSchema = qualitySchema.omit({ tipo: true }).extend({
+  code: z.number(),
+  name: z.string().nullable(),
+})
+export type QualityRow = z.infer<typeof qualityRowSchema>
+export const qualityListSchema = z.array(qualityRowSchema)
 
 export const digestSchema = z.object({
   // From the SIIE agrupamentos list; null until an import has read it. Dates are YYYY-MM-DD.
@@ -41,6 +67,10 @@ export const digestSchema = z.object({
   }),
   // Oldest first, up to the current year. Empty before the first import.
   years: z.array(yearRowSchema),
+  // Former members with no date at all in SIIE (old records): not in any year.
+  undated: z.number(),
+  // This year, one per secção (tipo 1 Lobitos ... 4 Caminheiros).
+  quality: z.array(qualitySchema),
   // Unix seconds of the latest finished import; null = never imported.
   lastImportAt: z.number().nullable(),
 })
@@ -66,5 +96,6 @@ export const seccaoSchema = z.object({
   // First day of this ano escutista: anything on or after it happened "this year".
   yearStart: z.string(),
   scouts: z.array(scoutSchema),
+  quality: qualitySchema,
 })
 export type SeccaoDetail = z.infer<typeof seccaoSchema>

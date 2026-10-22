@@ -5,6 +5,7 @@ import { EmptyState } from '../../../ui/EmptyState'
 import { useSeccao } from '../api'
 import type { Scout, SeccaoDetail } from '../schema'
 import { seccaoOf, type Tipo } from '../series'
+import { QualityLines } from './SeccaoCards'
 
 // The steps in API order (Scout.steps), then the board's columns: stage 0 = no adesão yet.
 const STEPS = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', 'Anilha de mérito']
@@ -46,6 +47,7 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
         <h2>
           {s.label} em {d.yearLabel}
         </h2>
+        <QualityLines q={d.quality} />
         <div className="tiles">
           <Tile label="Elementos" value={d.scouts.length} />
           <Tile label="Passos de progresso este ano" value={stepsThisYear} />

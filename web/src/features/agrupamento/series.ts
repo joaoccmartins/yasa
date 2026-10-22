@@ -1,6 +1,6 @@
 import type { YearRow } from './schema'
 
-export type SeriesKey = Exclude<keyof YearRow, 'year' | 'label'>
+export type SeriesKey = Exclude<keyof YearRow, 'year' | 'label' | 'byAge'>
 export type Series = { key: SeriesKey; label: string; color: string; dashed?: boolean }
 
 // The four secções take the palette's four colours (see tokens.css). Dirigentes and Sem registo
@@ -19,3 +19,8 @@ export const TOTAL: Series[] = [{ key: 'total', label: 'Total', color: 'var(--ac
 export const TIPOS = [1, 2, 3, 4] as const
 export type Tipo = (typeof TIPOS)[number]
 export const seccaoOf = (tipo: Tipo) => SECCOES[tipo - 1]
+
+// The secções whose counts can include age estimates (YearRow.byAge).
+export type AgedKey = keyof YearRow['byAge']
+export const isAged = (key: SeriesKey): key is AgedKey =>
+  key === 'lobitos' || key === 'exploradores' || key === 'pioneiros' || key === 'caminheiros'

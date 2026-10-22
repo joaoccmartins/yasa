@@ -1,4 +1,4 @@
-import { formatCode, formatUnixDate, formatUnixTime } from '../../../lib/format'
+import { formatAgrupamento, formatCode, formatUnixDate, formatUnixTime } from '../../../lib/format'
 import { accessLevelLabel, seccaoLabel } from '../../auth/access'
 import type { Access } from '../../auth/schema'
 
@@ -85,7 +85,7 @@ function CodeLists({ access }: { access: Access }) {
     {
       label: 'Agrupamentos',
       items: access.agrupamentos.map((a) =>
-        [formatCode('agrupamento', a.code), a.name, a.seccao && seccaoLabel(a.seccao)]
+        [formatAgrupamento(a.code, a.name), a.seccao && seccaoLabel(a.seccao)]
           .filter(Boolean)
           .join(' · '),
       ),

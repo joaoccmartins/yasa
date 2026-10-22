@@ -1,4 +1,4 @@
-import { formatCode, formatUnixTime } from '../../../lib/format'
+import { formatAgrupamento, formatUnixTime } from '../../../lib/format'
 import type { ImportStatus, MemberImport } from '../../auth/schema'
 
 const STATUS: Record<ImportStatus, string> = {
@@ -82,7 +82,7 @@ export function ImportsNotice({ imports }: { imports: MemberImport[] }) {
 
 /** "0455 · Nome · concluída 21/10/26 10:02: 243 elementos, 3 alterações, 1 saída". */
 function describe(i: MemberImport) {
-  const head = [formatCode('agrupamento', i.agrupamento), i.name, STATUS[i.status]]
+  const head = [formatAgrupamento(i.agrupamento, i.name), STATUS[i.status]]
     .filter(Boolean)
     .join(' · ')
   switch (i.status) {

@@ -2,8 +2,9 @@ import type { Me } from '../../auth/schema'
 import { EmptyState } from '../../../ui/EmptyState'
 import { AccessSummary } from '../components/AccessSummary'
 import { ImportsNotice } from '../components/ImportsNotice'
+import { QualityTable } from '../../agrupamento/components/QualityTable'
 
-/** Dashboards land here once data sync exists. */
+/** Access, imports in progress, and how well each agrupamento registers its progresso. */
 export function HomePage({ me }: { me: Me }) {
   const { access } = me
   const hasRead = access.refreshedAt != null
@@ -18,6 +19,8 @@ export function HomePage({ me }: { me: Me }) {
             title="O SIIE não lhe mostra nenhum agrupamento"
             body="O YASA mostra os agrupamentos que a sua conta SIIE consegue ver. Se isso mudar no SIIE, o acesso é atualizado no próximo início de sessão depois de expirar."
           />
+        ) : access.agrupamentos.some((a) => a.seccao == null) ? (
+          <QualityTable />
         ) : (
           <EmptyState
             title="Ainda sem dados"

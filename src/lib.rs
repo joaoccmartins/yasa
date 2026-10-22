@@ -108,6 +108,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/agrupamentos/quality", get(digest::quality_list))
         .route("/api/agrupamentos/{code}/digest", get(digest::get))
         .route(
             "/api/agrupamentos/{code}/seccoes/{tipo}",

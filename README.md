@@ -253,10 +253,26 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
 - **Start**: `admitted_on`, else the earliest adesão or promessa, else the first import that saw
   them. **End**: the current year while active; else `ano_saida` (left in 2019 = last year
   2018/19, to be checked against real data); else the year of their latest dated record.
-- A member counts in every year from start to end, in the secção they were in on September 30:
-  Dirigentes from the promessa de dirigente or first cargo in the agrupamento; for the current
-  year, SIIE's current secção; otherwise the secção of the latest adesão; otherwise
-  **Sem registo**. The secções always add up to the total.
+- A member counts in every year from start to end. The totals don't depend on progresso.
+- A former member with no date at all (old SIIE records with no admission, adesão, promessa or
+  cargo) can't be placed in time: they're left out, and the page says how many.
+- Their secção in a year is the one they were in on September 30, decided in this order:
+  1. Dirigentes from the promessa de dirigente or first cargo in the agrupamento.
+  2. For the current year, SIIE's current secção.
+  3. A record dated within that ano escutista (adesão, etapa, anilha, promessa, especialidade):
+     the secção of the latest one.
+  4. The latest adesão, unless the member's age is more than a year out of that secção's band
+     (they moved on and the next adesão wasn't recorded).
+  5. **Age** (ano escutista's first year - birth year): Lobitos 6-10, Exploradores 11-14,
+     Pioneiros 15-17, Caminheiros 18-23. Checked against SIIE's secção for every active member
+     on 2026-10-22. These are estimates: the digest returns them apart (`byAge`), and the chart
+     marks those years with hollow points.
+  6. Otherwise **Sem registo**. The secções always add up to the total.
+- **Progresso quality**, this year, per secção (on the cards and secção tabs) and per agrupamento
+  (`GET /api/agrupamentos/quality`, on the Painel): of the active members in each secção, how
+  many have its adesão registered, and of those past aspirante, how many have a promessa
+  registered. The promessa is made once, in the secção the member joined, so any secção's
+  promessa counts.
 
 The page has a Resumo tab (secção cards with this year's count and the change on last year, the
 chart) and one tab per secção, from `GET /api/agrupamentos/{code}/seccoes/{tipo}` (tipo 1

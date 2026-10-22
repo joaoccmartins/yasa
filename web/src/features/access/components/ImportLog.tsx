@@ -1,4 +1,4 @@
-import { formatCode, formatUnixTime } from '../../../lib/format'
+import { formatAgrupamento, formatUnixTime } from '../../../lib/format'
 import { Button } from '../../../ui/Button'
 import { useImports } from '../api'
 import type { ImportLogRow } from '../schema'
@@ -60,7 +60,7 @@ export function ImportLog() {
                   <tr key={i.id}>
                     <td className="when">{formatUnixTime(i.finishedAt ?? i.queuedAt)}</td>
                     <td className="wrap">
-                      {[formatCode('agrupamento', i.agrupamento), i.agrupamentoName]
+                      {[formatAgrupamento(i.agrupamento, i.agrupamentoName)]
                         .filter(Boolean)
                         .join(' · ')}
                     </td>

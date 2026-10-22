@@ -24,3 +24,14 @@ export function formatIsoDate(iso: string) {
   const [y, m, d] = iso.split('-')
   return `${d}/${m}/${y}`
 }
+
+// SIIE's agrupamento name may start with its code ("0028 - São Torcato"): drop it, the code is
+// shown on its own.
+export function agrupamentoName(name: string | null) {
+  return name?.replace(/^\d+\s*-\s*/, '') || null
+}
+
+// "0028 · São Torcato"
+export function formatAgrupamento(code: number, name: string | null) {
+  return [formatCode('agrupamento', code), agrupamentoName(name)].filter(Boolean).join(' · ')
+}

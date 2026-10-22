@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { formatCode, formatIsoDate, formatUnixTime } from '../../../lib/format'
+import { agrupamentoName, formatAgrupamento, formatCode, formatIsoDate, formatUnixTime } from '../../../lib/format'
 import { Button } from '../../../ui/Button'
 import { EmptyState } from '../../../ui/EmptyState'
 import { Segmented } from '../../../ui/Segmented'
@@ -9,7 +9,7 @@ import { MembersChart } from '../components/MembersChart'
 import { SeccaoCards } from '../components/SeccaoCards'
 import { SeccaoView } from '../components/SeccaoView'
 import type { Digest } from '../schema'
-import { SECCOES, seccaoOf, TIPOS, type Tipo } from '../series'
+import { isAged, SECCOES, seccaoOf, TIPOS, type Tipo } from '../series'
 
 type Mode = 'total' | 'seccoes'
 
@@ -36,7 +36,7 @@ export function AgrupamentoPage({ me }: { me: Me }) {
             <select value={code} onChange={(e) => setPicked(Number(e.target.value))}>
               {whole.map((a) => (
                 <option key={a.code} value={a.code}>
-                  {[formatCode('agrupamento', a.code), a.name].filter(Boolean).join(' · ')}
+                  {formatAgrupamento(a.code, a.name)}
                 </option>
               ))}
             </select>
@@ -102,7 +102,7 @@ function DigestView({ code }: { code: number }) {
           </nav>
           {view === 'resumo' ? (
             <>
-              <SeccaoCards years={d.years} onOpen={setView} />
+              <SeccaoCards years={d.years} quality={d.quality} onOpen={setView} />
               <div className="panel digest">
                 <Segmented
             name="digest-mode"
@@ -115,6 +115,13 @@ function DigestView({ code }: { code: number }) {
             ]}
           />
                 <MembersChart rows={d.years} mode={mode} />
+                {d.undated > 0 && (
+                  <p className="hint">
+                    {d.undated === 1
+                      ? '1 antigo elemento não tem nenhuma data no SIIE (admissão, adesão, promessa ou cargo) e fica fora do gráfico.'
+                      : `${d.undated} antigos elementos não têm nenhuma data no SIIE (admissão, adesão, promessa ou cargo) e ficam fora do gráfico.`}
+                  </p>
+                )}
                 <YearsTable d={d} />
               </div>
             </>
@@ -150,7 +157,7 @@ function Header({ d }: { d: Digest }) {
     <div className="panel summary">
       <div>
         <h2>
-          {a.name ?? `Agrupamento ${formatCode('agrupamento', a.code)}`}
+          {agrupamentoName(a.name) ?? `Agrupamento ${formatCode('agrupamento', a.code)}`}
           {a.estado && (
             <span className="badge tag" data-tone={a.estado === 'Ativo' ? 'accent' : 'danger'}>
               {a.estado}
@@ -207,6 +214,7 @@ function YearsTable({ d }: { d: Digest }) {
   return (
     <details>
       <summary>Ver a tabela</summary>
+      <p className="hint">Entre parênteses: quantos estão na secção por estimativa de idade, sem registo de progresso nesse ano.</p>
       <div className="table-wrap">
         <table className="table">
           <thead>
@@ -227,6 +235,7 @@ function YearsTable({ d }: { d: Digest }) {
                 {SECCOES.map((s) => (
                   <td key={s.key} className="num">
                     {r[s.key]}
+                    {isAged(s.key) && r.byAge[s.key] > 0 && <span className="aged"> ({r.byAge[s.key]})</span>}
                   </td>
                 ))}
                 <td className="num">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import type { YearRow } from '../schema'
-import { SECCOES, TOTAL } from '../series'
+import { isAged, SECCOES, TOTAL } from '../series'
 
 const HEIGHT = 280
 const MARGIN = { top: 12, bottom: 28, left: 40 }
@@ -57,6 +57,12 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
               {s.label}
             </li>
           ))}
+          <li>
+            <svg width="10" height="10" aria-hidden>
+              <circle cx="5" cy="5" r="3.5" fill="none" stroke="var(--ink-muted)" strokeWidth="1.5" />
+            </svg>
+            Inclui estimativas por idade
+          </li>
         </ul>
       )}
       {width > 0 && n > 0 && (
@@ -98,6 +104,23 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
               strokeDasharray={s.dashed ? '4 3' : undefined}
             />
           ))}
+          {/* Hollow markers: years where part of a secção's count was placed by age, not by a record. */}
+          {mode === 'seccoes' &&
+            series.filter((s) => isAged(s.key)).flatMap((s) =>
+              rows.map((r, i) =>
+                isAged(s.key) && r.byAge[s.key] > 0 ? (
+                  <circle
+                    key={`${s.key}-${r.year}`}
+                    cx={x(i)}
+                    cy={y(r[s.key])}
+                    r="3.5"
+                    fill="var(--surface-raised)"
+                    stroke={s.color}
+                    strokeWidth="1.5"
+                  />
+                ) : null,
+              ),
+            )}
           {mode === 'seccoes' &&
             endLabels(series.map((s) => ({ s, at: y(last[s.key]) }))).map(({ s, at }) => (
               <text key={s.key} x={x(n - 1) + 8} y={at} dy="0.32em" className="chart-label">
@@ -143,12 +166,21 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
                 <line x1="0" y1="4" x2="12" y2="4" stroke={s.color} strokeWidth="2" strokeDasharray={s.dashed ? '3 2' : undefined} />
               </svg>
               <b>{row[s.key]}</b> <span>{s.label}</span>
+              {isAged(s.key) && row.byAge[s.key] > 0 && <span>({row.byAge[s.key]} por idade)</span>}
             </div>
           ))}
+          {mode === 'total' && aged(row) > 0 && (
+            <div className="chart-tip-note">{aged(row)} com secção estimada por idade</div>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+/** How many of a year's members had their secção placed by age. */
+function aged(r: YearRow) {
+  return r.byAge.lobitos + r.byAge.exploradores + r.byAge.pioneiros + r.byAge.caminheiros
 }
 
 /** The element's width, kept up to date as it resizes. */

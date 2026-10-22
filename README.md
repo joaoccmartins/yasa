@@ -277,8 +277,11 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
   - **secção** criteria are about the secção as a whole.
 
   Every criterion a secção fails costs its level's points: red 3, yellow 2 (green 1, none yet).
-  An agrupamento's points are the sum over its secções; the Painel ranks them from most points
-  (worst) to fewest (`GET /api/agrupamentos/quality`), with an overlay listing what each fails.
+  An agrupamento's points are the sum over its secções. The Painel shows this year only: it ranks
+  agrupamentos from most points (worst) to fewest (`GET /api/agrupamentos/quality`), with an
+  overlay listing what each fails. Inside an agrupamento, the Resumo shows the evolution: its
+  points per ano escutista (red and yellow stacked) and, per criterion, the secções that failed it
+  each year; each secção tab has its own numbers over the years.
 
   | Criterion | Level | Fails when |
   | --- | --- | --- |

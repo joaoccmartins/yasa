@@ -7,6 +7,7 @@ import { Link } from '../../../ui/Link'
 import { Segmented } from '../../../ui/Segmented'
 import type { Me } from '../../auth/schema'
 import { useDigest } from '../api'
+import { CriteriaEvolution } from '../components/CriteriaEvolution'
 import { MembersChart } from '../components/MembersChart'
 import { MemberView } from '../components/MemberView'
 import { SeccaoCards } from '../components/SeccaoCards'
@@ -115,6 +116,7 @@ function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) 
           ) : (
             <>
               <SeccaoCards code={code} years={d.years} defs={d.criteriaDefs} criteria={d.criteria} />
+              <CriteriaEvolution defs={d.criteriaDefs} criteria={d.criteria} />
               <div className="panel digest">
                 <Segmented
                   name="digest-mode"

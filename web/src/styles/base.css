@@ -1178,3 +1178,42 @@ details > .hint {
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-3);
 }
+/* Agrupamento criteria over the years: stacked points, and the failing secções per criterion. */
+.crit-stack {
+  display: flex;
+  flex-direction: column;
+  width: min(56%, 40px);
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+.crit-stack span[data-level="red"] {
+  background: var(--level-red);
+}
+.crit-stack span[data-level="yellow"] {
+  background: var(--level-yellow);
+}
+.crit-seccoes {
+  justify-content: center;
+  gap: 2px;
+  font-size: 12px;
+}
+.crit-short {
+  display: none;
+}
+@media (max-width: 480px) {
+  .crit-long {
+    display: none;
+  }
+  .crit-short {
+    display: inline;
+  }
+  .crit-seccoes .seccao-dot::before {
+    margin-right: 2px;
+  }
+}
+/* A panel's explanation under its title. */
+.panel > h2 + .hint {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--ink-muted);
+  font-size: 13px;
+}

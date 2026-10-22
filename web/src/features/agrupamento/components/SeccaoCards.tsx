@@ -1,16 +1,16 @@
 import type { CSSProperties } from 'react'
-import type { Quality, YearRow } from '../schema'
-import { seccaoOf, TIPOS, type Tipo } from '../series'
+import type { Criteria, YearRow } from '../schema'
+import { CRITERIA, seccaoOf, TIPOS, type Tipo } from '../series'
 
-/** One card per secção with this year's count, the change on last year and how much of its
- * progresso is registered; opens the secção. */
+/** One card per secção with this year's count, the change on last year and this year's quality
+ * criteria; opens the secção. */
 export function SeccaoCards({
   years,
-  quality,
+  criteria,
   onOpen,
 }: {
   years: YearRow[]
-  quality: Quality[]
+  criteria: { tipo: number; years: Criteria[] }[]
   onOpen: (tipo: Tipo) => void
 }) {
   const current = years.at(-1)
@@ -23,6 +23,7 @@ export function SeccaoCards({
         const now = current[s.key]
         // Change on the previous ano escutista; none for the first year on record.
         const delta = previous ? now - previous[s.key] : null
+        const c = criteria.find((c) => c.tipo === tipo)?.years.find((y) => y.year === current.year)
         return (
           <button key={tipo} className="seccao-card" style={{ '--seccao': s.color } as CSSProperties} onClick={() => onOpen(tipo)}>
             <span className="seccao-card-name">{s.label}</span>
@@ -34,7 +35,7 @@ export function SeccaoCards({
                   ? `igual a ${previous.label}`
                   : `${delta > 0 ? '+' : ''}${delta} face a ${previous.label}`}
             </span>
-            <QualityLines q={quality[tipo - 1]} />
+            <CriteriaLines c={c} />
             <span className="seccao-card-go">Ver progresso →</span>
           </button>
         )
@@ -43,18 +44,19 @@ export function SeccaoCards({
   )
 }
 
-/** "Adesão registada 3 de 21" and "Promessa registada 0 de 18", for this year's members. */
-export function QualityLines({ q }: { q: Quality | undefined }) {
-  if (!q || q.members === 0) return null
+/** One year's criteria as "Progresso por registar 15 de 21" lines. */
+export function CriteriaLines({ c }: { c: Criteria | undefined }) {
+  if (!c || c.members === 0) return null
   return (
     <span className="quality-lines">
-      <Meter label="Adesão registada" value={q.withAdesao} of={q.members} />
-      {q.promessaDue > 0 && <Meter label="Promessa registada" value={q.withPromessa} of={q.promessaDue} />}
+      {CRITERIA.map((k) => (
+        <Meter key={k.key} label={k.label} value={c[k.key]} of={c.members} />
+      ))}
     </span>
   )
 }
 
-/** A labelled share as text plus a thin bar, e.g. "Adesão registada 3 de 21". */
+/** A labelled share of members flagged, as text plus a thin bar (longer is worse). */
 export function Meter({ label, value, of }: { label?: string; value: number; of: number }) {
   const pct = of === 0 ? 0 : Math.round((value / of) * 100)
   return (

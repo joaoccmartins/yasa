@@ -2,10 +2,11 @@ import { formatAgrupamento } from '../../../lib/format'
 import { Button } from '../../../ui/Button'
 import { useQualityList } from '../api'
 import type { QualityRow } from '../schema'
+import { CRITERIA } from '../series'
 import { Meter } from './SeccaoCards'
 
-/** Progresso quality of every agrupamento the account holds whole, least registered first, to spot
- * the ones not filling it in. */
+/** This year's quality criteria of every agrupamento the account holds whole, worst first, to spot
+ * the ones not keeping SIIE up to date. */
 export function QualityTable() {
   const list = useQualityList()
   if (list.isPending) {
@@ -24,16 +25,16 @@ export function QualityTable() {
       </div>
     )
   }
-  // Least adesão registered first; agrupamentos with no active members (not imported, or defunct) at the end.
-  const share = (r: QualityRow) => (r.members === 0 ? 2 : r.withAdesao / r.members)
-  const rows = [...list.data].sort((a, b) => share(a) - share(b) || a.code - b.code)
+  // Most flagged (both criteria, as a share of members) first; agrupamentos with no members this
+  // year (not imported, or defunct) at the end.
+  const share = (r: QualityRow) => (r.members === 0 ? -1 : (r.progresso + r.promessa) / r.members)
+  const rows = [...list.data].sort((a, b) => share(b) - share(a) || a.code - b.code)
   return (
     <section className="page-section" aria-labelledby="quality-title">
       <div>
-        <h2 id="quality-title">Progresso registado</h2>
+        <h2 id="quality-title">Critérios de qualidade</h2>
         <p className="hint">
-          Por agrupamento, este ano escutista: quantos elementos das secções têm a adesão à sua secção registada no
-          SIIE, e quantos dos que já não são aspirantes têm a promessa registada.
+          Por agrupamento, este ano escutista: quantos elementos das secções falham cada critério. Os piores primeiro.
         </p>
       </div>
       <div className="table-wrap">
@@ -42,8 +43,11 @@ export function QualityTable() {
             <tr>
               <th>Agrupamento</th>
               <th className="num">Elementos</th>
-              <th>Adesão</th>
-              <th>Promessa</th>
+              {CRITERIA.map((k) => (
+                <th key={k.key} title={k.hint}>
+                  {k.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -51,8 +55,11 @@ export function QualityTable() {
               <tr key={r.code}>
                 <td className="wrap">{formatAgrupamento(r.code, r.name)}</td>
                 <td className="num">{r.members || '-'}</td>
-                <td>{r.members > 0 ? <Meter value={r.withAdesao} of={r.members} /> : <span className="muted">Sem elementos ativos</span>}</td>
-                <td>{r.promessaDue > 0 ? <Meter value={r.withPromessa} of={r.promessaDue} /> : '-'}</td>
+                {CRITERIA.map((k) => (
+                  <td key={k.key}>
+                    {r.members > 0 ? <Meter value={r[k.key]} of={r.members} /> : <span className="muted">Sem elementos</span>}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>

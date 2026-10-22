@@ -10,7 +10,7 @@
 //!   always add up to the total. Dated records decide it first; where there are none, their age
 //!   does, and that count is reported apart (`by_age`) so the page can mark it as estimated.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::{
     Json,
@@ -125,19 +125,21 @@ pub struct YearRow {
     pub by_age: ByAge,
 }
 
-/// Progresso quality of one secção this ano escutista.
+/// Quality criteria of one secção in one ano escutista: flags of how well the agrupamento keeps
+/// SIIE up to date. Of the members counted in the secção at the year's end, how many break each
+/// criterion (higher is worse).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct Quality {
-    pub tipo: i16,
-    /// Active members in the secção now.
+pub struct Criteria {
+    pub year: i32,
+    pub label: String,
     pub members: u32,
-    /// Of those, how many have the secção's adesão registered.
-    pub with_adesao: u32,
-    /// Of those, how many are past aspirante (so should have made the promessa)...
-    pub promessa_due: u32,
-    /// ...and how many of these have a promessa registered, in any secção.
-    pub with_promessa: u32,
+    /// Progresso por registar: promised, but no adesão concluded in the secção. The promessa comes
+    /// after concluding the adesão, so it was done and not registered.
+    pub progresso: u32,
+    /// Promessa por registar: adesão concluded (a full ano escutista ago), or past aspirante this
+    /// year, but no promessa registered.
+    pub promessa: u32,
 }
 
 /// The ano escutista a `YYYY-MM-DD` date falls in: October onwards starts a new one.
@@ -258,6 +260,11 @@ fn fits(b: Bucket, age: i32) -> bool {
         .any(|(lo, hi, band)| *band == b && (lo - 1..=hi + 1).contains(&age))
 }
 
+/// The `i`th date of `v` if it is on or before `end`.
+fn dated_at<'a>(v: &'a [Option<String>], i: usize, end: &str) -> Option<&'a str> {
+    v.get(i).and_then(|d| on_or_before(d, end))
+}
+
 /// `date` if it is on or before `end`. ISO dates compare as text.
 fn on_or_before<'a>(date: &'a Option<String>, end: &str) -> Option<&'a str> {
     date.as_deref().filter(|d| *d <= end)
@@ -298,7 +305,7 @@ pub fn digest(members: &[MemberDates], today: &str) -> Vec<YearRow> {
     let mut rows: Vec<YearRow> = (first..=current)
         .map(|year| YearRow {
             year,
-            label: format!("{year}/{:02}", (year + 1) % 100),
+            label: year_label(year),
             ..Default::default()
         })
         .collect();
@@ -327,41 +334,59 @@ pub fn digest(members: &[MemberDates], today: &str) -> Vec<YearRow> {
     rows
 }
 
-/// Progresso quality this ano escutista, one per secção in SECCOES order: of the active members
-/// in it now, how many have its adesão registered, and of those past aspirante, a promessa. The
-/// promessa is made once, in the secção the member joined (an explorador who promised as a lobito
-/// only has the Lobitos date; SIIE's promessa dates match dados completos' Dt. Promessa, checked
-/// 2026-10-22), so any secção's promessa counts.
-pub fn quality(members: &[MemberDates], today: &str) -> Vec<Quality> {
+/// "2024/25"
+fn year_label(year: i32) -> String {
+    format!("{year}/{:02}", (year + 1) % 100)
+}
+
+/// The quality criteria per secção (SECCOES order) and ano escutista, oldest first, for the years
+/// the secção had members. Each member is checked in the secção they're counted in that year.
+/// The promessa is made once, in the secção the member joined (an explorador who promised as a
+/// lobito only has the Lobitos date; SIIE's promessa dates match dados completos' Dt. Promessa,
+/// checked 2026-10-22), so a promessa in any secção counts as made.
+pub fn criteria(members: &[MemberDates], today: &str) -> Vec<Vec<Criteria>> {
     let current = scout_year(today);
-    SECCOES
-        .iter()
-        .enumerate()
-        .map(|(i, &(tipo, b, ..))| {
-            let mut q = Quality {
-                tipo,
-                ..Default::default()
+    let mut per: Vec<BTreeMap<i32, Criteria>> = vec![BTreeMap::new(); SECCOES.len()];
+    for m in members {
+        let years = member_years(m, today);
+        // This year, past aspirante means the promessa was made, dated or not.
+        let aspirante = m
+            .categoria
+            .as_deref()
+            .is_some_and(|c| c.to_lowercase().contains("aspirante"));
+        for (k, &(y, b, _)) in years.iter().enumerate() {
+            let Some(i) = SECCOES.iter().position(|s| s.1 == b) else {
+                continue; // Dirigentes and Sem registo have no progresso.
             };
-            for m in members
-                .iter()
-                .filter(|m| m.active && bucket(m, current, true).0 == b)
-            {
-                let has = |v: &[Option<String>]| v.get(i).is_some_and(Option::is_some);
-                q.members += 1;
-                q.with_adesao += u32::from(has(&m.adesoes));
-                // Aspirantes haven't made the promessa yet.
-                let aspirante = m
-                    .categoria
-                    .as_deref()
-                    .is_some_and(|c| c.to_lowercase().contains("aspirante"));
-                if !aspirante {
-                    q.promessa_due += 1;
-                    q.with_promessa += u32::from(m.promessas.iter().any(Option::is_some));
-                }
+            let year_start = format!("{y}-10-01");
+            let year_end = format!("{}-09-30", y + 1);
+            let c = per[i].entry(y).or_insert_with(|| Criteria {
+                year: y,
+                label: year_label(y),
+                ..Default::default()
+            });
+            c.members += 1;
+
+            let promessa_dated =
+                (0..SECCOES.len()).any(|j| dated_at(&m.promessas, j, &year_end).is_some());
+            let promised = promessa_dated || (y == current && m.active && !aspirante);
+            let adesao = dated_at(&m.adesoes, i, &year_end);
+            // Progresso por registar. A member who promised in an earlier secção starts this one
+            // in Adesão, so they're only flagged from their second year in it.
+            let settled =
+                dated_at(&m.promessas, i, &year_end).is_some() || (k > 0 && years[k - 1].1 == b);
+            if promised && adesao.is_none() && settled {
+                c.progresso += 1;
             }
-            q
-        })
-        .collect()
+            // Promessa por registar: a full ano escutista after concluding the adesão to make it,
+            // or already past aspirante this year with no date.
+            let due = adesao.is_some_and(|d| d < year_start.as_str()) || promised;
+            if due && !promessa_dated {
+                c.promessa += 1;
+            }
+        }
+    }
+    per.into_iter().map(|t| t.into_values().collect()).collect()
 }
 
 /// Every member ever seen in these agrupamentos, present or not, with the dates `member_years`
@@ -464,13 +489,17 @@ pub async fn get(
     Ok(Json(json!({
         "agrupamento": agrupamento,
         "years": digest(&members, &today),
-        "quality": quality(&members, &today),
+        "criteria": SECCOES
+            .iter()
+            .zip(criteria(&members, &today))
+            .map(|(s, years)| json!({"tipo": s.0, "years": years}))
+            .collect::<Vec<_>>(),
         "undated": undated,
         "lastImportAt": last_import_at,
     })))
 }
 
-/// GET /api/agrupamentos/quality: this year's progresso quality of every agrupamento the account
+/// GET /api/agrupamentos/quality: this year's quality criteria of every agrupamento the account
 /// holds whole, all secções together, to compare them.
 pub async fn quality_list(
     State(s): State<AppState>,
@@ -494,18 +523,23 @@ pub async fn quality_list(
             .or_default()
             .push(m);
     }
+    let current = scout_year(&today);
     let rows: Vec<Value> = agrupamentos
         .into_iter()
         .map(|(code, name)| {
-            let q = quality(by_code.get(&code).map_or(&[][..], Vec::as_slice), &today);
-            let sum = |f: fn(&Quality) -> u32| q.iter().map(f).sum::<u32>();
+            let all = criteria(by_code.get(&code).map_or(&[][..], Vec::as_slice), &today);
+            // This year's column of each secção, added up.
+            let now: Vec<&Criteria> = all
+                .iter()
+                .filter_map(|years| years.last().filter(|c| c.year == current))
+                .collect();
+            let sum = |f: fn(&Criteria) -> u32| now.iter().map(|c| f(c)).sum::<u32>();
             json!({
                 "code": code,
                 "name": name,
-                "members": sum(|q| q.members),
-                "withAdesao": sum(|q| q.with_adesao),
-                "promessaDue": sum(|q| q.promessa_due),
-                "withPromessa": sum(|q| q.with_promessa),
+                "members": sum(|c| c.members),
+                "progresso": sum(|c| c.progresso),
+                "promessa": sum(|c| c.promessa),
             })
         })
         .collect();
@@ -518,9 +552,9 @@ pub async fn quality_list(
 struct Scout {
     totem: String,
     categoria: Option<String>,
-    /// The date of each of STEPS in this secção (`YYYY-MM-DD`), null if not reached.
+    /// The date each of STEPS was concluded in this secção (`YYYY-MM-DD`), null if not yet.
     steps: Vec<Option<String>>,
-    /// How far they got: 0 = no adesão yet, n = STEPS[n - 1] is the furthest step reached.
+    /// The stage they're in: 0 Adesão, 1-3 the etapa, 4 etapas concluídas (see `stage`).
     #[sqlx(skip)]
     stage: usize,
     promessa_on: Option<String>,
@@ -528,10 +562,15 @@ struct Scout {
     especialidades: sqlx::types::Json<Value>,
 }
 
-/// The furthest step reached, by order and not by date (SIIE may hold a later step without an
-/// earlier one).
+/// The stage a scout is in. Each date marks a stage concluded, and the scout then moves to the
+/// next: nothing concluded = in Adesão (0), adesão concluded = in the 1.ª etapa (1), and so on,
+/// up to 3.ª etapa concluded = etapas concluídas (4). By order, not by date: SIIE may hold a later
+/// stage without an earlier one. The anilha de mérito (STEPS[4]) is a distinction, not a stage.
 fn stage(steps: &[Option<String>]) -> usize {
-    steps.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
+    steps[..4]
+        .iter()
+        .rposition(Option::is_some)
+        .map_or(0, |i| i + 1)
 }
 
 /// The NINs of the active members who are in `target` this ano escutista, by the same rule as
@@ -597,10 +636,10 @@ pub async fn seccao(
     let year = scout_year(&today);
     Ok(Json(json!({
         "tipo": tipo,
-        "yearLabel": format!("{year}/{:02}", (year + 1) % 100),
+        "yearLabel": year_label(year),
         "yearStart": format!("{year}-10-01"),
         "scouts": scouts,
-        "quality": quality(&members, &today)[i],
+        "criteria": criteria(&members, &today).swap_remove(i),
     })))
 }
 
@@ -694,8 +733,21 @@ mod tests {
 
     #[test]
     fn stage_is_the_furthest_step_reached() {
+        // Nothing concluded: in Adesão. Adesão concluded: in the 1.ª etapa.
         assert_eq!(stage(&[None, None, None, None, None]), 0);
         assert_eq!(stage(&[d("2024-10-01"), None, None, None, None]), 1);
+        // 3.ª etapa concluded: etapas concluídas. The anilha alone isn't a stage.
+        assert_eq!(
+            stage(&[
+                d("2021-10-01"),
+                d("2022-10-01"),
+                d("2023-10-01"),
+                d("2024-10-01"),
+                None
+            ]),
+            4
+        );
+        assert_eq!(stage(&[None, None, None, None, d("2025-06-01")]), 0);
         // A later step without an earlier one still counts as reached.
         assert_eq!(
             stage(&[d("2024-10-01"), None, d("2025-06-01"), None, None]),
@@ -931,9 +983,11 @@ mod tests {
     }
 
     #[test]
-    fn quality_counts_adesao_and_promessa_per_seccao() {
+    fn criteria_flag_missing_progresso_and_promessa() {
+        // Lobitos since 2024/25 (by age: born 2017), this year all past aspirante.
         let lobito = |adesao: Option<&str>, promessa: Option<&str>, categoria: &str| MemberDates {
-            admitted_on: d("2024-10-01"),
+            admitted_on: d("2024-10-15"),
+            birth_month: d("2017-01-01"),
             seccao: d("Lobitos"),
             categoria: d(categoria),
             adesoes: adesoes(adesao, None, None, None),
@@ -941,27 +995,42 @@ mod tests {
             ..member()
         };
         let all = [
-            lobito(Some("2024-10-01"), Some("2025-05-01"), "Lobito"),
+            // All registered: no flag.
+            lobito(Some("2024-12-01"), Some("2025-05-01"), "Lobito"),
+            // Promised (by categoria) with nothing registered: both flags this year.
             lobito(None, None, "Lobito"),
-            // Aspirantes aren't due a promessa.
-            lobito(Some("2026-10-05"), None, "Aspirante a Lobito"),
+            // Promessa registered, adesão not: progresso flag, in both years.
+            lobito(None, Some("2025-05-01"), "Lobito"),
+            // Adesão concluded in 2024/25, no promessa yet and still aspirante: promessa flag
+            // from 2025/26, the first full ano escutista after the adesão.
+            lobito(Some("2025-06-01"), None, "Aspirante a Lobito"),
         ];
-        let q = &quality(&all, TODAY)[0];
+        let lob = &criteria(&all, TODAY)[0];
+        let years: Vec<(i32, u32, u32, u32)> = lob
+            .iter()
+            .map(|c| (c.year, c.members, c.progresso, c.promessa))
+            .collect();
         assert_eq!(
-            (q.members, q.with_adesao, q.promessa_due, q.with_promessa),
-            (3, 2, 2, 1)
+            years,
+            vec![(2024, 4, 1, 0), (2025, 4, 1, 1), (2026, 4, 2, 2)]
         );
-        assert_eq!(quality(&all, TODAY)[1].members, 0);
-        // An explorador who made the promessa as a lobito has made it.
-        let explorador = MemberDates {
+        assert!(criteria(&all, TODAY)[1].is_empty());
+
+        // An explorador who promised as a lobito and just moved up isn't flagged this year.
+        let moved = MemberDates {
             admitted_on: d("2022-10-01"),
+            birth_month: d("2016-01-01"),
             seccao: d("Exploradores"),
             categoria: d("Explorador"),
+            adesoes: adesoes(Some("2023-01-01"), None, None, None),
             promessas: adesoes(Some("2023-05-01"), None, None, None),
             ..member()
         };
-        let q = &quality(&[explorador], TODAY)[1];
-        assert_eq!((q.promessa_due, q.with_promessa), (1, 1));
+        let exp = &criteria(&[moved], TODAY)[1];
+        assert_eq!(
+            (exp[0].year, exp[0].progresso, exp[0].promessa),
+            (2026, 0, 0)
+        );
     }
 }
 
@@ -1095,7 +1164,11 @@ mod db_tests {
             a["especialidades"],
             json!([{"name": "Nadador", "on": "2025-06-01"}])
         );
-        assert_eq!(v["quality"]["withAdesao"], 1);
+        // Adesão concluded, explorador past aspirante with no promessa: flagged this year.
+        assert_eq!(
+            v["criteria"].as_array().unwrap().last().unwrap()["promessa"],
+            1
+        );
 
         // The comparison lists only the whole grant.
         let Json(list) = quality_list(State(state.clone()), acc())

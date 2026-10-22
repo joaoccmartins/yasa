@@ -268,19 +268,25 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
      on 2026-10-22. These are estimates: the digest returns them apart (`byAge`), and the chart
      marks those years with hollow points.
   6. Otherwise **Sem registo**. The secções always add up to the total.
-- **Progresso quality**, this year, per secção (on the cards and secção tabs) and per agrupamento
-  (`GET /api/agrupamentos/quality`, on the Painel): of the active members in each secção, how
-  many have its adesão registered, and of those past aspirante, how many have a promessa
-  registered. The promessa is made once, in the secção the member joined, so any secção's
-  promessa counts.
+- **Quality criteria**, flags of how well an agrupamento keeps SIIE up to date, per secção and
+  ano escutista (a matrix on each secção tab; this year on the secção cards and, per
+  agrupamento, on the Painel via `GET /api/agrupamentos/quality`). Of the members counted in the
+  secção that year:
+  - **Progresso por registar**: promised (a promessa date, or this year past aspirante) but no
+    adesão concluded in the secção. A member who promised in an earlier secção is only checked
+    from their second year in the new one.
+  - **Promessa por registar**: adesão concluded before the year began (a full year to promise),
+    or past aspirante this year, but no promessa date. The promessa is made once, in the secção
+    the member joined, so any secção's promessa counts.
 
 The page has a Resumo tab (secção cards with this year's count and the change on last year, the
 chart) and one tab per secção, from `GET /api/agrupamentos/{code}/seccoes/{tipo}` (tipo 1
 Lobitos ... 4 Caminheiros, same access rule). That lists the secção's scouts this ano escutista
 by **totem** (never a NIN), chosen by the same rule as the digest's current year, with the date of
-each step there (adesão, 1.ª-3.ª etapa, anilha de mérito), the promessa and the especialidades
-earned in that secção. The page shows them as a board, one column per step, each scout in the
-furthest step reached. Steps, promessas and especialidades on or after October 1 count as "this
+each stage concluded there (adesão, 1.ª-3.ª etapa) and of the anilha de mérito, the promessa
+and the especialidades earned in that secção. The page shows them as a board, one column per
+stage a scout can be **in**: Adesão (nothing concluded yet), 1.ª, 2.ª, 3.ª etapa (the previous
+one concluded) and Etapas concluídas. The anilha de mérito is a badge, not a stage. Steps, promessas and especialidades on or after October 1 count as "this
 year".
 
 Colours: the whole app uses four Sanzo Wada colours (Raw Sienna, Benzol Green, Deep Lyons Blue,

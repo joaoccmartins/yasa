@@ -24,3 +24,18 @@ export const seccaoOf = (tipo: Tipo) => SECCOES[tipo - 1]
 export type AgedKey = keyof YearRow['byAge']
 export const isAged = (key: SeriesKey): key is AgedKey =>
   key === 'lobitos' || key === 'exploradores' || key === 'pioneiros' || key === 'caminheiros'
+
+// Quality criteria (see Criteria in schema.ts): flags of how well an agrupamento keeps SIIE up
+// to date. Higher is worse.
+export const CRITERIA = [
+  {
+    key: 'progresso',
+    label: 'Progresso por registar',
+    hint: 'Fizeram a promessa, mas não têm a adesão à secção concluída no SIIE.',
+  },
+  {
+    key: 'promessa',
+    label: 'Promessa por registar',
+    hint: 'Concluíram a adesão há mais de um ano escutista, ou já não são aspirantes, mas não têm a promessa no SIIE.',
+  },
+] as const

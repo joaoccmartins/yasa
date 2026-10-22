@@ -5,11 +5,14 @@ import { EmptyState } from '../../../ui/EmptyState'
 import { useSeccao } from '../api'
 import type { Scout, SeccaoDetail } from '../schema'
 import { seccaoOf, type Tipo } from '../series'
-import { QualityLines } from './SeccaoCards'
+import { CriteriaMatrix } from './CriteriaMatrix'
+import { CriteriaLines } from './SeccaoCards'
 
-// The steps in API order (Scout.steps), then the board's columns: stage 0 = no adesão yet.
-const STEPS = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', 'Anilha de mérito']
-const STAGES = ['Sem adesão', ...STEPS]
+// What each date in Scout.steps concludes, in API order.
+const STEPS = ['Adesão concluída', '1.ª etapa concluída', '2.ª etapa concluída', '3.ª etapa concluída', 'Anilha de mérito']
+// The board's columns, by Scout.stage: the stage a scout is in. Concluding one moves them to the
+// next; nothing concluded yet = in Adesão. The anilha de mérito is a badge, not a stage.
+const STAGES = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', 'Etapas concluídas']
 
 /** One secção this ano escutista: who is at which progression step, and its especialidades. */
 export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
@@ -38,7 +41,8 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
   }
   // "This year" = on or after the ano escutista's first day. ISO dates compare as text.
   const thisYear = (on: string | null) => on != null && on >= d.yearStart
-  const stepsThisYear = d.scouts.flatMap((sc) => sc.steps).filter(thisYear).length
+  const stepsThisYear = d.scouts.flatMap((sc) => sc.steps.slice(0, 4)).filter(thisYear).length
+  const now = d.criteria.find((c) => c.label === d.yearLabel)
   const promessas = d.scouts.filter((sc) => thisYear(sc.promessaOn)).length
   const especialidades = d.scouts.flatMap((sc) => sc.especialidades)
   return (
@@ -47,15 +51,16 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
         <h2>
           {s.label} em {d.yearLabel}
         </h2>
-        <QualityLines q={d.quality} />
+        <CriteriaLines c={now} />
         <div className="tiles">
           <Tile label="Elementos" value={d.scouts.length} />
-          <Tile label="Passos de progresso este ano" value={stepsThisYear} />
+          <Tile label="Etapas concluídas este ano" value={stepsThisYear} />
           <Tile label="Promessas este ano" value={promessas} />
           <Tile label="Especialidades este ano" value={especialidades.filter((e) => thisYear(e.on)).length} />
         </div>
       </div>
       <Board d={d} thisYear={thisYear} />
+      <CriteriaMatrix years={d.criteria} />
       <EspecialidadesTable scouts={d.scouts} thisYear={thisYear} />
     </div>
   )
@@ -70,17 +75,18 @@ function Tile({ label, value }: { label: string; value: number }) {
   )
 }
 
-/** One column per progression step, each scout in the furthest step they reached. */
+/** One column per stage, each scout in the stage they're in now. */
 function Board({ d, thisYear }: { d: SeccaoDetail; thisYear: (on: string | null) => boolean }) {
   const columns = STAGES.map((label, stage) => ({
     label,
     scouts: d.scouts.filter((sc) => sc.stage === stage),
-  })).filter((c, stage) => stage > 0 || c.scouts.length > 0)
+  }))
   return (
     <section className="panel" aria-labelledby="board-title">
       <h2 id="board-title">Progresso</h2>
       <p className="hint">
-        Cada elemento está no passo mais avançado que já alcançou. Os destacados alcançaram-no este ano escutista.
+        Cada elemento está na etapa em curso: quem ainda não concluiu nada está na Adesão, e ao concluir uma passa à
+        seguinte. Os destacados mudaram de etapa este ano escutista.
       </p>
       <div className="board">
         {columns.map((c) => {
@@ -115,6 +121,7 @@ function ScoutCard({ sc, thisYear }: { sc: Scout; thisYear: (on: string | null) 
         <span className="scout-tags">
           {fresh && <span className="badge" data-tone="accent">Este ano</span>}
           {sc.promessaOn && <span className="badge">Promessa</span>}
+          {sc.steps[4] && <span className="badge">Anilha de mérito</span>}
           {sc.especialidades.length > 0 && (
             <span className="badge">
               {sc.especialidades.length} esp.{espThisYear > 0 && ` (+${espThisYear})`}

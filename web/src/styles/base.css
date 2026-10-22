@@ -837,11 +837,12 @@ details summary {
   background: var(--line);
   overflow: hidden;
 }
+/* The share flagged by a quality criterion: longer is worse. */
 .meter-bar span {
   display: block;
   height: 100%;
   border-radius: 2px;
-  background: var(--seccao, var(--accent));
+  background: var(--danger);
 }
 /* Counts placed by age, in the years table */
 .table .aged,
@@ -858,4 +859,16 @@ details > .hint {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-4);
   max-width: 640px;
+}
+/* Quality criteria matrix: flagged cells tinted by the share of the secção flagged. */
+.table.criteria td[data-flag] {
+  background: color-mix(in oklab, var(--danger) var(--flag), transparent);
+  font-weight: 600;
+}
+.table.criteria td:first-child {
+  white-space: normal;
+  min-width: 220px;
+}
+.table.criteria td {
+  height: auto;
 }

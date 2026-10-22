@@ -102,7 +102,7 @@ function DigestView({ code }: { code: number }) {
           </nav>
           {view === 'resumo' ? (
             <>
-              <SeccaoCards years={d.years} quality={d.quality} onOpen={setView} />
+              <SeccaoCards years={d.years} criteria={d.criteria} onOpen={setView} />
               <div className="panel digest">
                 <Segmented
             name="digest-mode"

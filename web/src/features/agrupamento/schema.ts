@@ -22,19 +22,21 @@ export const yearRowSchema = z.object({
 })
 export type YearRow = z.infer<typeof yearRowSchema>
 
-// Progresso quality of one secção this ano escutista: of its active members now, how many have
-// its adesão registered, and of those past aspirante, how many have a promessa registered.
-export const qualitySchema = z.object({
-  tipo: z.number(),
+// Quality criteria of one secção in one ano escutista: of the members counted in it at the
+// year's end, how many break each one (higher is worse).
+// - progresso: promised, but no adesão concluded in the secção (done, not registered).
+// - promessa: adesão concluded a full year ago, or past aspirante this year, but no promessa date.
+export const criteriaSchema = z.object({
+  year: z.number(),
+  label: z.string(),
   members: z.number(),
-  withAdesao: z.number(),
-  promessaDue: z.number(),
-  withPromessa: z.number(),
+  progresso: z.number(),
+  promessa: z.number(),
 })
-export type Quality = z.infer<typeof qualitySchema>
+export type Criteria = z.infer<typeof criteriaSchema>
 
-// The same, all secções together, for each agrupamento the account holds whole.
-export const qualityRowSchema = qualitySchema.omit({ tipo: true }).extend({
+// This year's criteria, all secções together, for each agrupamento the account holds whole.
+export const qualityRowSchema = criteriaSchema.pick({ members: true, progresso: true, promessa: true }).extend({
   code: z.number(),
   name: z.string().nullable(),
 })
@@ -69,8 +71,8 @@ export const digestSchema = z.object({
   years: z.array(yearRowSchema),
   // Former members with no date at all in SIIE (old records): not in any year.
   undated: z.number(),
-  // This year, one per secção (tipo 1 Lobitos ... 4 Caminheiros).
-  quality: z.array(qualitySchema),
+  // Per secção (tipo 1 Lobitos ... 4 Caminheiros), the years it had members, oldest first.
+  criteria: z.array(z.object({ tipo: z.number(), years: z.array(criteriaSchema) })),
   // Unix seconds of the latest finished import; null = never imported.
   lastImportAt: z.number().nullable(),
 })
@@ -80,9 +82,9 @@ export type Digest = z.infer<typeof digestSchema>
 export const scoutSchema = z.object({
   totem: z.string(),
   categoria: z.string().nullable(),
-  // The date of each step in this secção, in STEPS order; null = not reached.
+  // When each step was concluded in this secção: adesão, 1.ª-3.ª etapa, anilha de mérito.
   steps: z.array(z.string().nullable()),
-  // 0 = no adesão yet; n = the furthest step reached is STEPS[n - 1].
+  // The stage they're in: 0 Adesão, 1-3 that etapa, 4 etapas concluídas.
   stage: z.number(),
   promessaOn: z.string().nullable(),
   // Earned in this secção, newest first.
@@ -96,6 +98,7 @@ export const seccaoSchema = z.object({
   // First day of this ano escutista: anything on or after it happened "this year".
   yearStart: z.string(),
   scouts: z.array(scoutSchema),
-  quality: qualitySchema,
+  // This secção's criteria per year, oldest first.
+  criteria: z.array(criteriaSchema),
 })
 export type SeccaoDetail = z.infer<typeof seccaoSchema>

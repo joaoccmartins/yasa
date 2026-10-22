@@ -258,6 +258,19 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
   year, SIIE's current secção; otherwise the secção of the latest adesão; otherwise
   **Sem registo**. The secções always add up to the total.
 
+The page has a Resumo tab (secção cards with this year's count and the change on last year, the
+chart) and one tab per secção, from `GET /api/agrupamentos/{code}/seccoes/{tipo}` (tipo 1
+Lobitos ... 4 Caminheiros, same access rule). That lists the secção's scouts this ano escutista
+by **totem** (never a NIN), chosen by the same rule as the digest's current year, with the date of
+each step there (adesão, 1.ª-3.ª etapa, anilha de mérito), the promessa and the especialidades
+earned in that secção. The page shows them as a board, one column per step, each scout in the
+furthest step reached. Steps, promessas and especialidades on or after October 1 count as "this
+year".
+
+Colours: the whole app uses four Sanzo Wada colours (Raw Sienna, Benzol Green, Deep Lyons Blue,
+Apricot Yellow), defined once at the top of [web/src/styles/tokens.css](web/src/styles/tokens.css)
+with a light and a dark step each. Everything else derives from them.
+
 ### Agrupamento data
 
 Read in each member import from `/agrupamentos/list?xml=agrupamentos/agrupamento/agrupamento`

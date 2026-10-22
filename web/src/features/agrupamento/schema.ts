@@ -45,3 +45,26 @@ export const digestSchema = z.object({
   lastImportAt: z.number().nullable(),
 })
 export type Digest = z.infer<typeof digestSchema>
+
+// One scout of a secção (by totem: names never reach YASA). Dates are YYYY-MM-DD.
+export const scoutSchema = z.object({
+  totem: z.string(),
+  categoria: z.string().nullable(),
+  // The date of each step in this secção, in STEPS order; null = not reached.
+  steps: z.array(z.string().nullable()),
+  // 0 = no adesão yet; n = the furthest step reached is STEPS[n - 1].
+  stage: z.number(),
+  promessaOn: z.string().nullable(),
+  // Earned in this secção, newest first.
+  especialidades: z.array(z.object({ name: z.string(), on: z.string().nullable() })),
+})
+export type Scout = z.infer<typeof scoutSchema>
+
+export const seccaoSchema = z.object({
+  tipo: z.number(),
+  yearLabel: z.string(),
+  // First day of this ano escutista: anything on or after it happened "this year".
+  yearStart: z.string(),
+  scouts: z.array(scoutSchema),
+})
+export type SeccaoDetail = z.infer<typeof seccaoSchema>

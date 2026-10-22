@@ -6,8 +6,10 @@ import { Segmented } from '../../../ui/Segmented'
 import type { Me } from '../../auth/schema'
 import { useDigest } from '../api'
 import { MembersChart } from '../components/MembersChart'
+import { SeccaoCards } from '../components/SeccaoCards'
+import { SeccaoView } from '../components/SeccaoView'
 import type { Digest } from '../schema'
-import { SECCOES } from '../series'
+import { SECCOES, seccaoOf, TIPOS, type Tipo } from '../series'
 
 type Mode = 'total' | 'seccoes'
 
@@ -56,6 +58,8 @@ export function AgrupamentoPage({ me }: { me: Me }) {
 function DigestView({ code }: { code: number }) {
   const digest = useDigest(code)
   const [mode, setMode] = useState<Mode>('total')
+  // 'resumo' = the whole agrupamento; a tipo = that secção's detail.
+  const [view, setView] = useState<'resumo' | Tipo>('resumo')
 
   if (digest.isPending) {
     return (
@@ -83,8 +87,24 @@ function DigestView({ code }: { code: number }) {
           body="Os elementos deste agrupamento ainda não foram importados. A importação corre em segundo plano depois de um início de sessão."
         />
       ) : (
-        <div className="panel digest">
-          <Segmented
+        <>
+          <nav className="tabs" aria-label="Secções">
+            {(['resumo', ...TIPOS] as const).map((v) => (
+              <button
+                key={v}
+                className="nav-link"
+                aria-current={view === v ? 'page' : undefined}
+                onClick={() => setView(v)}
+              >
+                {v === 'resumo' ? 'Resumo' : seccaoOf(v).label}
+              </button>
+            ))}
+          </nav>
+          {view === 'resumo' ? (
+            <>
+              <SeccaoCards years={d.years} onOpen={setView} />
+              <div className="panel digest">
+                <Segmented
             name="digest-mode"
             legend="Mostrar"
             value={mode}
@@ -94,9 +114,14 @@ function DigestView({ code }: { code: number }) {
               { value: 'seccoes', label: 'Por secção' },
             ]}
           />
-          <MembersChart rows={d.years} mode={mode} />
-          <YearsTable d={d} />
-        </div>
+                <MembersChart rows={d.years} mode={mode} />
+                <YearsTable d={d} />
+              </div>
+            </>
+          ) : (
+            <SeccaoView key={view} code={code} tipo={view} />
+          )}
+        </>
       )}
     </>
   )

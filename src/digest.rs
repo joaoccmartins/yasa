@@ -1,6 +1,7 @@
 //! Agrupamento digest: how many members an agrupamento had per ano escutista, in total and per
-//! secção, rebuilt from each member's admission, progression and exit data. Only counts leave
-//! this module, never a NIN, totem or any per-member value.
+//! secção, rebuilt from each member's admission, progression and exit data. The digest itself is
+//! counts only; the secção view lists the secção's current scouts by totem (never a NIN), with
+//! their progression and especialidades.
 //!
 //! - An ano escutista runs from October 1 to September 30; 2024 means 2024/25.
 //! - A member counts in every year from their start to their end, both included ("active at any
@@ -37,6 +38,8 @@ pub enum Bucket {
 /// The dates one member's years are built from, all `YYYY-MM-DD`. Loaded by `load`.
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct MemberDates {
+    /// Only to fetch the secção view's details; never sent.
+    pub nin: String,
     pub admitted_on: Option<String>,
     /// The earliest adesão or promessa in any secção.
     pub first_record: Option<String>,
@@ -205,7 +208,7 @@ pub fn digest(members: &[MemberDates], today: &str) -> Vec<YearRow> {
 async fn load(db: &sqlx::PgPool, code: i16) -> Result<Vec<MemberDates>, sqlx::Error> {
     // least / greatest skip nulls, so each one is the earliest / latest date the member has.
     sqlx::query_as(
-        "select m.admitted_on::text as admitted_on,
+        "select m.nin, m.admitted_on::text as admitted_on,
                 least(p.ladesao, p.eadesao, p.padesao, p.cadesao, p.promessalobito,
                       p.promessaexplorador, p.promessapioneiro, p.promessacaminheiro,
                       p.promessadirigente)::text as first_record,
@@ -276,6 +279,113 @@ pub async fn get(
     })))
 }
 
+/// The four secções: tipo (as in `seccoes` and the especialidades reports), bucket, the prefix of
+/// their member_progress columns and their promessa column.
+const SECCOES: [(i16, Bucket, &str, &str); 4] = [
+    (1, Bucket::Lobitos, "l", "promessalobito"),
+    (2, Bucket::Exploradores, "e", "promessaexplorador"),
+    (3, Bucket::Pioneiros, "p", "promessapioneiro"),
+    (4, Bucket::Caminheiros, "c", "promessacaminheiro"),
+];
+/// The progression steps of a secção, in order: member_progress columns after the prefix.
+const STEPS: [&str; 5] = ["adesao", "etapa1", "etapa2", "etapa3", "anilhamerito"];
+
+/// One scout of a secção, as the secção view shows them.
+#[derive(Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct Scout {
+    totem: String,
+    categoria: Option<String>,
+    /// The date of each of STEPS in this secção (`YYYY-MM-DD`), null if not reached.
+    steps: Vec<Option<String>>,
+    /// How far they got: 0 = no adesão yet, n = STEPS[n - 1] is the furthest step reached.
+    #[sqlx(skip)]
+    stage: usize,
+    promessa_on: Option<String>,
+    /// [{name, on}] earned in this secção, newest first.
+    especialidades: sqlx::types::Json<Value>,
+}
+
+/// The furthest step reached, by order and not by date (SIIE may hold a later step without an
+/// earlier one).
+fn stage(steps: &[Option<String>]) -> usize {
+    steps.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
+}
+
+/// The NINs of the active members who are in `target` this ano escutista, by the same rule as
+/// the digest's current year (so the secção view and the digest's count agree).
+fn current_members(members: &[MemberDates], target: Bucket, today: &str) -> Vec<String> {
+    let current = scout_year(today);
+    members
+        .iter()
+        .filter(|m| m.active && bucket(m, current, true) == target)
+        .map(|m| m.nin.clone())
+        .collect()
+}
+
+/// GET /api/agrupamentos/{code}/seccoes/{tipo}: the scouts in a secção this ano escutista, with
+/// their progression steps, promessa and especialidades there. Same access rule as the digest.
+pub async fn seccao(
+    State(s): State<AppState>,
+    acc: CurrentAccount,
+    Path((code, tipo)): Path<(i16, i16)>,
+) -> Result<Json<Value>, ApiError> {
+    let db = &s.db;
+    let &(_, target, prefix, promessa) = SECCOES
+        .iter()
+        .find(|(t, ..)| *t == tipo)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Secção desconhecida."))?;
+    granted(db, acc.id, code)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                "O resumo só aparece com acesso ao agrupamento inteiro.",
+            )
+        })?;
+    let (today,): (String,) = sqlx::query_as("select current_date::text")
+        .fetch_one(db)
+        .await
+        .map_err(db_error)?;
+    let nins = current_members(&load(db, code).await.map_err(db_error)?, target, &today);
+
+    // Column names come from SECCOES / STEPS, never from the request.
+    let steps: Vec<String> = STEPS
+        .iter()
+        .map(|c| format!("p.{prefix}{c}::text"))
+        .collect();
+    let mut scouts: Vec<Scout> = sqlx::query_as(&format!(
+        "select m.totem, m.categoria, array[{}] as steps, p.{promessa}::text as promessa_on,
+                coalesce((
+                    select json_agg(json_build_object('name', e.especialidade, 'on', e.achieved_on)
+                                    order by e.achieved_on desc nulls last, e.especialidade)
+                    from member_especialidades e where e.nin = m.nin and e.seccao_tipo = $2
+                ), '[]') as especialidades
+         from members m left join member_progress p on p.nin = m.nin
+         where m.nin = any($1)
+         order by m.totem",
+        steps.join(", ")
+    ))
+    .bind(&nins)
+    .bind(tipo)
+    .fetch_all(db)
+    .await
+    .map_err(db_error)?;
+    for sc in &mut scouts {
+        sc.stage = stage(&sc.steps);
+    }
+
+    // The ano escutista these scouts are counted in: from October 1 of its first year.
+    let year = scout_year(&today);
+    Ok(Json(json!({
+        "tipo": tipo,
+        "yearLabel": format!("{year}/{:02}", (year + 1) % 100),
+        "yearStart": format!("{year}-10-01"),
+        "scouts": scouts,
+    })))
+}
+
 /// The agrupamento's own data, as shown on top of the digest (from the agrupamentos list,
 /// see member_reports::AGRUPAMENTO_COLUMNS). Dates are `YYYY-MM-DD`.
 #[derive(Serialize, sqlx::FromRow)]
@@ -339,6 +449,34 @@ mod tests {
 
     fn d(s: &str) -> Option<String> {
         Some(s.into())
+    }
+
+    #[test]
+    fn stage_is_the_furthest_step_reached() {
+        assert_eq!(stage(&[None, None, None, None, None]), 0);
+        assert_eq!(stage(&[d("2024-10-01"), None, None, None, None]), 1);
+        // A later step without an earlier one still counts as reached.
+        assert_eq!(
+            stage(&[d("2024-10-01"), None, d("2025-06-01"), None, None]),
+            3
+        );
+    }
+
+    #[test]
+    fn current_members_are_active_and_in_the_seccao_now() {
+        let m = |nin: &str, seccao: &str, active: bool| MemberDates {
+            nin: nin.into(),
+            admitted_on: d("2024-10-01"),
+            seccao: d(seccao),
+            active,
+            ..member()
+        };
+        let all = [
+            m("A", "Lobitos", true),
+            m("B", "Exploradores", true),
+            m("C", "Lobitos", false),
+        ];
+        assert_eq!(current_members(&all, Bucket::Lobitos, TODAY), vec!["A"]);
     }
 
     #[test]
@@ -561,6 +699,34 @@ mod db_tests {
             (2, 1, 1)
         );
         assert_eq!((r("2024/25").total, r("2024/25").exploradores), (1, 1));
+
+        // The secção view: A is the one current explorador, at adesão, with one especialidade.
+        sqlx::query(
+            "insert into member_especialidades (nin, seccao_tipo, especialidade, achieved_on)
+             values ('TEST92A', 2, 'Nadador', '2025-06-01'), ('TEST92A', 1, 'Lobito X', null)",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        let acc = CurrentAccount {
+            id,
+            label: String::new(),
+            role: "member".into(),
+        };
+        let Json(v) = seccao(State(state.clone()), acc, Path((9201, 2)))
+            .await
+            .unwrap_or_else(|e| panic!("{}", e.1));
+        assert_eq!(v["scouts"].as_array().unwrap().len(), 1);
+        let a = &v["scouts"][0];
+        assert_eq!(
+            (a["totem"].as_str(), a["stage"].as_u64()),
+            (Some("A"), Some(1))
+        );
+        assert_eq!(a["steps"][0], "2025-03-10");
+        assert_eq!(
+            a["especialidades"],
+            json!([{"name": "Nadador", "on": "2025-06-01"}])
+        );
 
         cleanup(db).await;
     }

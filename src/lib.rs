@@ -109,6 +109,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/agrupamentos/{code}/digest", get(digest::get))
+        .route(
+            "/api/agrupamentos/{code}/seccoes/{tipo}",
+            get(digest::seccao),
+        )
         .route("/api/admin/accounts", get(admin::list).post(admin::invite))
         .route("/api/admin/accounts/{id}", patch(admin::update))
         .route("/api/admin/events", get(admin::events))

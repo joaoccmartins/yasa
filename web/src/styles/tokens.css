@@ -2,23 +2,36 @@
 :root {
   color-scheme: light dark;
 
-  --surface: #f5f7f6;
-  --surface-raised: #ffffff;
-  --ink: #15201b;
-  --ink-muted: #5c6862;
-  --line: #dce2de;
-  /* Pine green: the outdoors, without the usual cream-and-terracotta look. */
-  --accent: #1d6b50;
+  /* Palette: four colours from Sanzo Wada's "A Dictionary of Color Combinations". To re-theme,
+     change only this block (and its dark twin below), then re-run the data-viz palette validator
+     on the four --color-* values against --surface-raised in each theme. Each colour keeps its
+     hue; only its lightness is stepped so it reads as a chart line on this theme's surface. */
+  --color-apricot: #ceb000; /* Apricot Yellow #ffdd00, darkened: the original vanishes on white */
+  --color-benzol: #00978d; /* Benzol Green, as is */
+  --color-lyons: #2b5398; /* Deep Lyons Blue #1c4286, lifted to the chart lightness band */
+  --color-sienna: #bb7125; /* Raw Sienna, as is */
+  /* Buttons, links, current nav item: Deep Lyons Blue as is. */
+  --accent: #1c4286;
   --accent-ink: #ffffff;
-  --accent-soft: #e2efe9;
+
+  /* Neutrals, kept plain so the palette carries the colour. */
+  --surface: #f6f6f4;
+  --surface-raised: #ffffff;
+  --ink: #1b1d22;
+  --ink-muted: #5d616b;
+  --line: #e0e0dc;
   --danger: #b3261e;
-  --contour: rgb(29 107 80 / 0.07);
-  /* Chart series: the secções in CNE colours, plus Dirigentes. Validated as a set per theme. */
-  --series-lobitos: #eda100;
-  --series-exploradores: #008300;
-  --series-pioneiros: #2a78d6;
-  --series-caminheiros: #e34948;
-  --series-dirigentes: #6250d6;
+
+  /* Derived from the palette: nothing below needs editing to re-theme. */
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--surface-raised));
+  --contour: color-mix(in srgb, var(--accent) 7%, transparent);
+  --seccao-lobitos: var(--color-apricot);
+  --seccao-exploradores: var(--color-benzol);
+  --seccao-pioneiros: var(--color-lyons);
+  --seccao-caminheiros: var(--color-sienna);
+  /* Dirigentes and missing data stay neutral, apart from the four secções. */
+  --seccao-dirigentes: var(--ink);
+  --seccao-sem-registo: var(--ink-muted);
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -36,21 +49,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface: #0f1512;
-    --surface-raised: #17201b;
-    --ink: #e6ece8;
-    --ink-muted: #95a39b;
-    --line: #26322c;
-    --accent: #4fb68c;
-    --accent-ink: #0b1510;
-    --accent-soft: #173127;
+    /* Palette, dark steps (validated against #1a1d24). */
+    --color-apricot: #ac9300;
+    --color-benzol: #00978d;
+    --color-lyons: #4770b8;
+    --color-sienna: #9f5700;
+    --accent: #7eabf8;
+    --accent-ink: #0b1020;
+
+    --surface: #111318;
+    --surface-raised: #1a1d24;
+    --ink: #e8e9ec;
+    --ink-muted: #9a9fab;
+    --line: #2a2e37;
     --danger: #f2877e;
-    --contour: rgb(79 182 140 / 0.08);
-    --series-lobitos: #c98500;
-    --series-exploradores: #008300;
-    --series-pioneiros: #3987e5;
-    --series-caminheiros: #e66767;
-    --series-dirigentes: #9085e9;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.35);
   }
 }

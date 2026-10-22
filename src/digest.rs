@@ -373,7 +373,10 @@ pub async fn load(db: &sqlx::PgPool, codes: &[i16]) -> Result<Vec<MemberDates>, 
          left join lateral (
              select min(started_on) as first_cargo,
                     greatest(max(started_on), max(ended_on)) as last_cargo
-             from member_cargos where nin = m.nin and agrupamento = m.agrupamento
+             -- A cargo's agrupamento: SIIE's agrup, else the one it's listed under (agrup is empty
+             -- on about a third of the cargos, checked 2026-10-22).
+             from member_cargos
+             where nin = m.nin and coalesce(agrupamento, import_agrupamento) = m.agrupamento
          ) c on true
          left join lateral (
              select coalesce(array_agg(achieved_on::text) filter (where seccao_tipo = 1), '{}') as l,
@@ -396,13 +399,14 @@ async fn instrutor_spans(
     codes: &[i16],
 ) -> Result<Vec<InstrutorSpan>, sqlx::Error> {
     sqlx::query_as(
-        "select agrupamento, seccao_tipo as tipo, started_on::text as \"from\",
+        "select coalesce(agrupamento, import_agrupamento) as agrupamento, seccao_tipo as tipo,
+                started_on::text as \"from\",
                 case when ended_on is not null then ended_on::text
                      when active then null
                      else started_on::text end as \"to\"
          from member_cargos
-         where agrupamento = any($1) and sigla_cargo = 'I' and seccao_tipo is not null
-           and started_on is not null",
+         where coalesce(agrupamento, import_agrupamento) = any($1) and sigla_cargo = 'I'
+           and seccao_tipo is not null and started_on is not null",
     )
     .bind(codes)
     .fetch_all(db)
@@ -693,7 +697,8 @@ async fn seccao_adults(db: &sqlx::PgPool, code: i16, tipo: i16) -> Result<Vec<Ad
                 string_agg(distinct c.cargo, ', ') as cargos,
                 bool_or(c.sigla_cargo = 'I') as instrutor
          from member_cargos c join members m on m.nin = c.nin
-         where c.agrupamento = $1 and c.active and c.seccao_tipo = $2
+         where coalesce(c.agrupamento, c.import_agrupamento) = $1 and c.active
+           and c.seccao_tipo = $2
            and m.present and m.situacao like 'Ativo%'
          group by m.nin, m.birth_month, m.totem, m.categoria
          order by m.totem",
@@ -705,29 +710,32 @@ async fn seccao_adults(db: &sqlx::PgPool, code: i16, tipo: i16) -> Result<Vec<Ad
 }
 
 /// Sub-unidades (bandos, patrulhas, equipas, tribos) have at most 8 members and at least 4 (5 in
-/// the Alcateia), and agrupamentos aim for about 6 each.
+/// the Alcateia), and agrupamentos aim for about 6 each. A secção has at most 5 of them.
 const SUBUNIDADE_MAX: u32 = 8;
+const SUBUNIDADES_MAX: u32 = 5;
 const SUBUNIDADE_TARGET: f64 = 6.0;
 pub(crate) fn subunidade_min(tipo: i16) -> u32 {
     if tipo == 1 { 5 } else { 4 }
 }
 
 /// The sub-unidades a secção of `members` most likely has, as their sizes, largest first.
-/// - Possible counts: those whose even split fits min..=max (n from ceil(m/max) to floor(m/min)).
+/// - Possible counts: those whose even split fits min..=max (n from ceil(m/max) to floor(m/min)),
+///   and no more than 5.
 /// - Of those, the one whose average size is closest to 6; a tie goes to fewer, larger ones.
 ///   12 = 2 x 6, not 3 x 4; 15 = 3 x 5; 17 = 6 + 6 + 5.
 /// - None fits (under the minimum, or e.g. 9 lobitos: 1 x 9 is too big, 5 + 4 too small): as
-///   few as stay under the maximum, so one incomplete sub-unidade for a small secção.
+///   few as stay under the maximum, so one incomplete sub-unidade for a small secção. Past 40
+///   members, 5 sub-unidades over the maximum size.
 pub fn estimate_subunidades(members: u32, min: u32) -> Vec<u32> {
     if members == 0 {
         return Vec::new();
     }
     let distance = |n: u32| (f64::from(members) / f64::from(n) - SUBUNIDADE_TARGET).abs();
-    let n = (members.div_ceil(SUBUNIDADE_MAX)..=members / min)
+    let n = (members.div_ceil(SUBUNIDADE_MAX)..=(members / min).min(SUBUNIDADES_MAX))
         .filter(|n| *n > 0)
         // min_by keeps the first of equals: the smaller count.
         .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
-        .unwrap_or_else(|| members.div_ceil(SUBUNIDADE_MAX).max(1));
+        .unwrap_or_else(|| members.div_ceil(SUBUNIDADE_MAX).clamp(1, SUBUNIDADES_MAX));
     // Even split: the first `extra` sub-unidades get one more.
     let (base, extra) = (members / n, members % n);
     (0..n).map(|k| base + u32::from(k < extra)).collect()
@@ -812,7 +820,7 @@ pub async fn member(
                 from member_especialidades e where e.nin = m.nin), '[]'),
             'cargos', coalesce((
                 select json_agg(json_build_object('cargo', c.cargo, 'seccaoTipo', c.seccao_tipo,
-                                                  'agrupamento', c.agrupamento,
+                                                  'agrupamento', coalesce(c.agrupamento, c.import_agrupamento),
                                                   'startedOn', c.started_on, 'endedOn', c.ended_on,
                                                   'active', c.active)
                                 order by c.started_on nulls last)
@@ -976,17 +984,24 @@ mod tests {
         assert_eq!(estimate_subunidades(15, 4), vec![5, 5, 5]);
         assert_eq!(estimate_subunidades(17, 4), vec![6, 6, 5]);
         assert_eq!(estimate_subunidades(8, 4), vec![8]);
-        assert_eq!(estimate_subunidades(40, 5), vec![6, 6, 6, 6, 6, 5, 5]);
+        // At most 5: 40 lobitos are 5 x 8, not 7 bandos; past 40 they grow over 8.
+        assert_eq!(estimate_subunidades(40, 5), vec![8, 8, 8, 8, 8]);
+        assert_eq!(estimate_subunidades(30, 4), vec![6, 6, 6, 6, 6]);
+        assert_eq!(estimate_subunidades(52, 4), vec![11, 11, 10, 10, 10]);
         assert_eq!(estimate_subunidades(10, 5), vec![5, 5]);
         // Too few for one, or no split that fits: as few as stay under 8.
         assert_eq!(estimate_subunidades(3, 5), vec![3]);
         assert_eq!(estimate_subunidades(9, 5), vec![5, 4]);
         assert!(estimate_subunidades(0, 4).is_empty());
         // Every fitting answer stays within 4..=8.
-        for m in 8..=80 {
+        for m in 1..=80 {
             let sizes = estimate_subunidades(m, 4);
             assert_eq!(sizes.iter().sum::<u32>(), m);
-            assert!(sizes.iter().all(|s| (4..=8).contains(s)), "{m}: {sizes:?}");
+            assert!(sizes.len() <= 5, "{m}: {sizes:?}");
+            // From 8 to 40 members, every sub-unidade fits 4..=8.
+            if (8..=40).contains(&m) {
+                assert!(sizes.iter().all(|s| (4..=8).contains(s)), "{m}: {sizes:?}");
+            }
         }
     }
 
@@ -1269,6 +1284,15 @@ mod db_tests {
             "insert into member_cargos (siie_id, nin, cargo, sigla_cargo, seccao_tipo, agrupamento,
                                         started_on, active)
              values (-9202, 'TEST92C', 'Chefe de Expedição', 'CGE', 2, 9201, '2026-10-01', true)",
+            // An instrutor whose cargo has no agrup in SIIE: it counts under the agrupamento it's
+            // listed under.
+            "insert into members (nin, totem, totem_from_siie, agrupamento, situacao, seccao,
+                                  categoria, admitted_on, present)
+             values ('TEST92D', 'D', false, 9201, 'Ativo', 'Dirigentes', 'Dirigente',
+                     '2026-10-01', true)",
+            "insert into member_cargos (siie_id, nin, cargo, sigla_cargo, seccao_tipo, agrupamento,
+                                        import_agrupamento, started_on, active)
+             values (-9203, 'TEST92D', 'Instrutor', 'I', 2, null, 9201, '2026-10-01', true)",
             "insert into member_especialidades (nin, seccao_tipo, especialidade, achieved_on)
              values ('TEST92A', 2, 'Nadador', '2025-06-01'), ('TEST92A', 1, 'Lobito X', null)",
         ] {
@@ -1354,8 +1378,10 @@ mod db_tests {
             a["especialidades"],
             json!([{"name": "Nadador", "on": "2025-06-01"}])
         );
-        // C leads the expedição: shown on top, with their cargo.
-        assert_eq!(v["adults"].as_array().unwrap().len(), 1);
+        // C leads the expedição and D is its instrutor: both on top, with their cargos.
+        assert_eq!(v["adults"].as_array().unwrap().len(), 2);
+        assert_eq!(v["adults"][1]["totem"], "D");
+        assert_eq!(v["adults"][1]["instrutor"], true);
         assert_eq!(
             (
                 v["adults"][0]["totem"].as_str(),
@@ -1400,13 +1426,12 @@ mod db_tests {
             (rows[0]["code"].as_i64(), rows[0]["members"].as_u64()),
             (Some(9201), Some(1))
         );
-        // One explorador this year, past aspirante with no promessa date (red, 3), below the
-        // minimum (red, 3) and no instrutor for its sub-unidade (yellow, 2).
-        assert_eq!(rows[0]["points"], 8);
+        // One explorador this year, past aspirante with no promessa date (red, 3) and below the
+        // minimum (red, 3). D instructs its one sub-unidade, so no instrutores flag.
+        assert_eq!(rows[0]["points"], 6);
         assert_eq!(
             rows[0]["failed"],
-            json!([{"tipo": 2, "key": "promessa"}, {"tipo": 2, "key": "minimo"},
-                   {"tipo": 2, "key": "instrutores"}])
+            json!([{"tipo": 2, "key": "promessa"}, {"tipo": 2, "key": "minimo"}])
         );
 
         cleanup(db).await;

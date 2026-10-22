@@ -8,7 +8,7 @@
 //!
 //! profile and links never print raw rows, so their output can be shared for the field review.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use yasa::siie::{self, GridBody, GridResponse};
 
@@ -25,10 +25,27 @@ use serde_json::{Map, Value, json};
 const ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_PAGE_SIZE: u32 = 5;
 const MAX_PAGE_SIZE: u32 = 1000;
-// Profile: a column's values are listed only if it has at most this many distinct ones, and then
-// only the values at least MIN_VALUE_COUNT rows share, so a small grid can't reveal a person.
+// Profile: a column's values are listed only if it has at most this many distinct ones (or the
+// column is asked for by name), and then only the values at least MIN_VALUE_COUNT different
+// members share. Members, not rows: one person has many rows (a row per cargo, especialidade...),
+// so counting rows let a single member's name through.
 const MAX_LISTED_DISTINCT: usize = 40;
 const MIN_VALUE_COUNT: u64 = 5;
+// Columns whose values are never listed, whatever the counts: names, ids, contacts, addresses,
+// birth dates. Matched as parts of the key (e.g. "nome" covers "nomepai").
+const PERSONAL_KEYS: &[&str] = &[
+    "nome",
+    "nin",
+    "nif",
+    "cc",
+    "rid",
+    "email",
+    "telefone",
+    "telemovel",
+    "morada",
+    "codpostal",
+    "nascimento",
+];
 // Stop counting distinct values past this (memory bound); the column then shows "> 5000".
 const MAX_TRACKED_DISTINCT: usize = 5000;
 const TOP_SHAPES: usize = 5;
@@ -63,6 +80,14 @@ struct FetchForm {
     mode: String,
     /// A report path (raw, profile) or a page path starting with `/` (links). Blank = default.
     target: String,
+    /// Profile only: "key=value" to profile only the rows where that column equals the value
+    /// (a server-side Kendo filter), e.g. "siglacargo=I". Blank = every row.
+    #[serde(default)]
+    only: String,
+    /// Profile only: columns (comma separated) whose common values are listed even past
+    /// MAX_LISTED_DISTINCT distinct ones, e.g. "descricao". Still never PERSONAL_KEYS.
+    #[serde(default)]
+    values: String,
 }
 
 async fn index() -> Html<String> {
@@ -85,6 +110,14 @@ async fn index() -> Html<String> {
   (a pasted <code>/elementos/List?xml=...</code> page path works too, and other list pages
   such as <code>{agrupamentos}</code> are opened as they are); all are read with one
   login. Links: one page, e.g. <code>/</code> for the menu. Raw: one report.</small></p>
+  <label>Only rows where (profile) <input name="only" placeholder="siglacargo=I"></label>
+  <p><small>Optional, <code>column=value</code>: profiles just those rows (SIIE filters them), so a
+  column's common values show for them alone. Values are still listed only when at least
+  {MIN_VALUE_COUNT} different members share them.</small></p>
+  <label>List values of (profile) <input name="values" placeholder="descricao"></label>
+  <p><small>Optional, column names separated by commas: their common values are listed even when
+  they have more than {MAX_LISTED_DISTINCT} distinct ones. Only values at least {MIN_VALUE_COUNT}
+  different members share; names, ids, contacts and addresses never.</small></p>
   <label>Page size (raw) <input name="page_size" type="number" min="1" max="{MAX_PAGE_SIZE}" value="{DEFAULT_PAGE_SIZE}"></label>
   <button>Fetch</button>
 </form>"#
@@ -119,7 +152,15 @@ async fn fetch(Form(f): Form<FetchForm>) -> Html<String> {
             .await
             .map(|r| render_result(&r)),
         "links" => links(creds, if target.is_empty() { "/" } else { &target }).await,
-        _ => profile(creds, &reports).await,
+        _ => {
+            let listed: Vec<String> = f
+                .values
+                .split(',')
+                .map(|k| k.trim().to_owned())
+                .filter(|k| !k.is_empty())
+                .collect();
+            profile(creds, &reports, only_filter(&f.only), &listed).await
+        }
     };
     // SiieError messages never contain the NIF or password.
     result.unwrap_or_else(|e| {
@@ -247,7 +288,8 @@ fn join_keys(o: &Map<String, Value>) -> String {
 struct ColStats {
     types: BTreeSet<&'static str>,
     filled: u64,
-    values: HashMap<String, u64>,
+    /// Per value, the distinct members (NIN, else the row) that have it.
+    values: HashMap<String, HashSet<String>>,
     values_overflow: bool,
     shapes: HashMap<String, u64>,
 }
@@ -265,23 +307,37 @@ fn report_path(line: &str) -> String {
     report.split('&').next().unwrap_or_default().to_owned()
 }
 
-/// Profiles each report with one login. A report that fails shows its error and the rest go on.
+/// The Kendo filter for an "only" line ("key=value", eq), or None when it's blank or malformed.
+fn only_filter(only: &str) -> Option<Value> {
+    let (key, value) = only.trim().split_once('=')?;
+    let (key, value) = (key.trim(), value.trim());
+    (!key.is_empty()).then(
+        || json!({"logic": "and", "filters": [{"field": key, "operator": "eq", "value": value}]}),
+    )
+}
+
+/// Profiles each report with one login, only the rows `only` matches when given. A report that
+/// fails shows its error and the rest go on.
 async fn profile(
     creds: siie::Credentials,
     reports: &[String],
+    only: Option<Value>,
+    listed: &[String],
 ) -> Result<Html<String>, siie::SiieError> {
     let client = siie::new_client()?;
     let login = siie::login(&client, creds).await?;
     let mut sections = String::new();
     for r in reports {
-        sections.push_str(&match profile_one(&client, &login.token, r).await {
-            Ok(html) => html,
-            Err(e) => format!(
-                r#"<h1>Profile: <code>{}</code></h1><p class="err">{}</p>"#,
-                esc(r),
-                esc(&e.to_string())
-            ),
-        });
+        sections.push_str(
+            &match profile_one(&client, &login.token, r, only.as_ref(), listed).await {
+                Ok(html) => html,
+                Err(e) => format!(
+                    r#"<h1>Profile: <code>{}</code></h1><p class="err">{}</p>"#,
+                    esc(r),
+                    esc(&e.to_string())
+                ),
+            },
+        );
     }
     Ok(page(&format!("{sections}{BACK}")))
 }
@@ -292,12 +348,21 @@ async fn profile_one(
     client: &reqwest::Client,
     token: &SecretString,
     report_path: &str,
+    only: Option<&Value>,
+    listed: &[String],
 ) -> Result<String, siie::SiieError> {
     let report = siie::open_report(client, report_path).await?;
 
     let mut cols: BTreeMap<String, ColStats> = BTreeMap::new();
     let mut filter_value: Option<Value> = None;
-    let rows = siie::for_each_row(client, token, &report, None, |row| {
+    let mut row_number = 0u64;
+    let rows = siie::for_each_row(client, token, &report, only, |row| {
+        row_number += 1;
+        // Who the row is about, to count members rather than rows.
+        let who = row
+            .get("nin")
+            .and_then(value_text)
+            .unwrap_or_else(|| format!("row {row_number}"));
         for (k, v) in row {
             let c = cols.entry(k.clone()).or_default();
             let Some(text) = value_text(v) else {
@@ -308,7 +373,7 @@ async fn profile_one(
             c.filled += 1;
             *c.shapes.entry(shape(&text)).or_default() += 1;
             if c.values.len() < MAX_TRACKED_DISTINCT || c.values.contains_key(&text) {
-                *c.values.entry(text).or_default() += 1;
+                c.values.entry(text).or_default().insert(who.clone());
             } else {
                 c.values_overflow = true;
             }
@@ -353,19 +418,23 @@ async fn profile_one(
                 esc(k),
                 c.types.iter().copied().collect::<Vec<_>>().join(", "),
                 esc(&shapes.join(" | ")),
-                esc(&common_values(c)),
+                esc(&common_values(k, c, listed.iter().any(|l| l == k))),
             )
         })
         .collect();
 
     Ok(format!(
-        "<h1>Profile: <code>{}</code></h1><p>{rows} rows, {} columns. Shapes: letters are \
+        "<h1>Profile: <code>{}</code>{}</h1><p>{rows} rows, {} columns. Shapes: letters are \
          <code>a</code>, digits <code>9</code> (<code>9{{n}}</code> for long runs). Values are \
          listed only for columns with at most {MAX_LISTED_DISTINCT} distinct values, and only the \
-         ones at least {MIN_VALUE_COUNT} rows share.</p>{filter}\
+         ones at least {MIN_VALUE_COUNT} different members share (never names, ids, contacts or addresses).</p>{filter}\
          <table border=1 cellpadding=4><tr><th>key</th><th>types</th><th>fill</th><th>distinct</th>\
          <th>shapes</th><th>common values</th></tr>{lines}</table>",
         esc(report_path),
+        only.map_or(String::new(), |f| format!(
+            " <small>only where <code>{}</code></small>",
+            esc(f["filters"][0]["field"].as_str().unwrap_or_default()),
+        )),
         cols.len()
     ))
 }
@@ -408,14 +477,23 @@ async fn filter_test(
 }
 
 /// Values shared by at least MIN_VALUE_COUNT rows, most common first, for low-cardinality columns.
-fn common_values(c: &ColStats) -> String {
-    if c.values_overflow || c.values.len() > MAX_LISTED_DISTINCT {
+fn common_values(key: &str, c: &ColStats, asked: bool) -> String {
+    let key = key.to_lowercase();
+    if PERSONAL_KEYS.iter().any(|p| key.contains(p)) {
         return String::new();
     }
-    let mut vals: Vec<_> = c.values.iter().collect();
-    vals.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    if c.values_overflow || (c.values.len() > MAX_LISTED_DISTINCT && !asked) {
+        return String::new();
+    }
+    // Counted in distinct members, so one person's many rows can't reveal them.
+    let mut vals: Vec<(&String, u64)> = c
+        .values
+        .iter()
+        .map(|(v, who)| (v, who.len() as u64))
+        .collect();
+    vals.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     let (common, rare): (Vec<_>, Vec<_>) =
-        vals.into_iter().partition(|(_, n)| **n >= MIN_VALUE_COUNT);
+        vals.into_iter().partition(|(_, n)| *n >= MIN_VALUE_COUNT);
     let mut out: Vec<String> = common.iter().map(|(v, n)| format!("{v} ({n})")).collect();
     if !rare.is_empty() {
         out.push(format!("+{} rare hidden", rare.len()));
@@ -659,6 +737,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_filter_reads_key_equals_value() {
+        let f = only_filter(" siglacargo = I ").unwrap();
+        assert_eq!(
+            f["filters"][0],
+            json!({"field": "siglacargo", "operator": "eq", "value": "I"})
+        );
+        assert!(only_filter("").is_none());
+        assert!(only_filter("=I").is_none());
+    }
+
+    #[test]
     fn report_path_accepts_page_paths() {
         assert_eq!(
             report_path(" elementos/cursos/lista-cursos "),
@@ -691,9 +780,25 @@ mod tests {
 
     #[test]
     fn common_values_hide_rare_ones() {
+        let who = |n: u32| {
+            (0..n)
+                .map(|i| format!("nin{i}"))
+                .collect::<HashSet<String>>()
+        };
         let mut c = ColStats::default();
-        c.values.insert("Ativo".into(), 9);
-        c.values.insert("Raro".into(), 1);
-        assert_eq!(common_values(&c), "Ativo (9) | +1 rare hidden");
+        c.values.insert("Ativo".into(), who(9));
+        c.values.insert("Raro".into(), who(1));
+        assert_eq!(
+            common_values("situacao", &c, false),
+            "Ativo (9) | +1 rare hidden"
+        );
+        // One member's 7 rows are one member: hidden.
+        let mut c = ColStats::default();
+        c.values.insert("Fulano".into(), who(1));
+        assert_eq!(common_values("descricao", &c, false), "+1 rare hidden");
+        // Personal columns are never listed, even when shared.
+        let mut c = ColStats::default();
+        c.values.insert("Maria".into(), who(9));
+        assert_eq!(common_values("nome", &c, true), "");
     }
 }

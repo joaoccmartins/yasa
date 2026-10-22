@@ -315,7 +315,13 @@ the average ages, and **instrutores per sub-unidade** (chefes and chefes adjunto
 unidade, so they're left out of that ratio). SIIE has no sub-unidades (bandos, patrulhas,
 equipas, tribos) that we know of, so `digest::siie_subunidades` is a placeholder returning none and
 `estimate_subunidades` works them out from the number of elementos: 4 to 8 each (5 to 8 for
-lobitos), the count whose average is closest to 6, split evenly (12 = 2 x 6, 15 = 3 x 5).
+lobitos), at most 5 per secção, the count whose average is closest to 6, split evenly (12 = 2 x 6,
+15 = 3 x 5; past 40 members, 5 larger ones).
+
+Instrutores: only 1 of 481 instrutor cargos in production names its secção in the descrição
+(checked 2026-10-22), so most aren't tied to a secção, don't show in its equipa de animação, and
+"Instrutores insuficientes" fails for most secções. That's kept on purpose (it shows the data is
+missing) until a SIIE source for an instrutor's secção is found.
 
 Every member has an **identicon**: a 5 x 5 mirrored pattern in one of the four palette colours,
 drawn in the browser from their opaque ref ([web/src/ui/Identicon.tsx](web/src/ui/Identicon.tsx)).

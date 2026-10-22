@@ -49,3 +49,61 @@ export function scoutYear(iso: string) {
 
 // What each secção calls its sub-unidades.
 export const SUBUNIDADES: Record<Tipo, string> = { 1: 'Bandos', 2: 'Patrulhas', 3: 'Equipas', 4: 'Tribos' }
+
+// "2024/25", as the backend's year_label.
+export const yearLabel = (year: number) => `${year}/${String((year + 1) % 100).padStart(2, '0')}`
+
+// How many complete years the forecast line is fitted on, the fewest it needs, and how far ahead
+// it goes.
+export const FIT_YEARS = 6
+const MIN_FIT_YEARS = 3
+const FORECAST_YEARS = 3
+
+// TODO(forecast): replace with a cohort flow model: age the current members forward, with pooled
+// passagem/saída rates per secção and age from every agrupamento the account holds, plus this
+// agrupamento's average entrants. A straight line can't see a big lobitos cohort moving up.
+/** The next FORECAST_YEARS after the current one, from a least squares line per secção through
+ * the last FIT_YEARS complete years. Empty when there are fewer than MIN_FIT_YEARS of them. */
+export function forecast(rows: YearRow[]): YearRow[] {
+  // The current year (the last row) is still filling up: censo and passagens happen in autumn.
+  const fit = rows.slice(0, -1).slice(-FIT_YEARS)
+  if (fit.length < MIN_FIT_YEARS) return []
+  const current = rows[rows.length - 1].year
+
+  // Ordinary least squares, count = a + b * year:
+  // b = cov(year, count) / var(year), a = mean(count) - b * mean(year).
+  const mean = (v: number[]) => v.reduce((s, x) => s + x, 0) / v.length
+  const years = fit.map((r) => r.year)
+  const my = mean(years)
+  const varYear = mean(years.map((y) => (y - my) ** 2))
+  const line = (key: SeriesKey) => {
+    const counts = fit.map((r) => r[key])
+    const mc = mean(counts)
+    const b = mean(years.map((y, i) => (y - my) * (counts[i] - mc))) / varYear
+    return (year: number) => mc + b * (year - my)
+  }
+  const lines = SECCOES.map((s) => [s.key, line(s.key)] as const)
+
+  return Array.from({ length: FORECAST_YEARS }, (_, i) => {
+    const year = current + 1 + i
+    const row: YearRow = {
+      year,
+      label: yearLabel(year),
+      total: 0,
+      lobitos: 0,
+      exploradores: 0,
+      pioneiros: 0,
+      caminheiros: 0,
+      dirigentes: 0,
+      semRegisto: 0,
+      byAge: { lobitos: 0, exploradores: 0, pioneiros: 0, caminheiros: 0 },
+    }
+    // Whole people, never fewer than none. The total is the sum of the rounded secções, so they
+    // still add up as in the digest.
+    for (const [key, at] of lines) {
+      row[key] = Math.max(0, Math.round(at(year)))
+      row.total += row[key]
+    }
+    return row
+  })
+}

@@ -856,6 +856,12 @@ details summary {
   color: var(--ink-muted);
   font-size: 12px;
 }
+
+/* Forecast rows of the years table: projected, not counted. */
+.table tr.forecast td {
+  color: var(--ink-muted);
+  font-style: italic;
+}
 details > .hint {
   margin: var(--space-2) 0;
   color: var(--ink-muted);

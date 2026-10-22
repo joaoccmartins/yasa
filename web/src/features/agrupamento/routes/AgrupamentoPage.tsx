@@ -11,8 +11,8 @@ import { MembersChart } from '../components/MembersChart'
 import { MemberView } from '../components/MemberView'
 import { SeccaoCards } from '../components/SeccaoCards'
 import { SeccaoView } from '../components/SeccaoView'
-import type { Digest } from '../schema'
-import { isAged, SECCOES, seccaoOf, tipoOfSlug, TIPOS } from '../series'
+import type { Digest, YearRow } from '../schema'
+import { FIT_YEARS, forecast, isAged, SECCOES, seccaoOf, tipoOfSlug, TIPOS } from '../series'
 
 type Mode = 'total' | 'seccoes'
 type AgrupamentoRoute = Extract<Route, { name: 'agrupamento' }>
@@ -81,6 +81,8 @@ function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) 
     )
   }
   const d = digest.data
+  // A few numbers per secção: cheap enough to work out on every render.
+  const projected = forecast(d.years)
   return (
     <>
       <Header d={d} />
@@ -124,7 +126,13 @@ function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) 
                     { value: 'seccoes', label: 'Por secção' },
                   ]}
                 />
-                <MembersChart rows={d.years} mode={mode} />
+                <MembersChart rows={d.years} forecast={projected} mode={mode} />
+                {projected.length > 0 && (
+                  <p className="hint">
+                    Previsão: tendência linear de cada secção nos últimos {Math.min(FIT_YEARS, d.years.length - 1)} anos
+                    completos. Não conta passagens de secção nem entradas novas.
+                  </p>
+                )}
                 {d.undated > 0 && (
                   <p className="hint">
                     {d.undated === 1
@@ -132,7 +140,7 @@ function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) 
                       : `${d.undated} antigos elementos não têm nenhuma data no SIIE (admissão, adesão, promessa ou cargo) e ficam fora do gráfico.`}
                   </p>
                 )}
-                <YearsTable d={d} />
+                <YearsTable d={d} forecast={projected} />
               </div>
             </>
           )}
@@ -218,7 +226,7 @@ function Tile({ label, value, small }: { label: string; value: string | number; 
 }
 
 /** The same numbers as the chart, newest year first. */
-function YearsTable({ d }: { d: Digest }) {
+function YearsTable({ d, forecast }: { d: Digest; forecast: YearRow[] }) {
   return (
     <details>
       <summary>Ver a tabela</summary>
@@ -237,6 +245,20 @@ function YearsTable({ d }: { d: Digest }) {
             </tr>
           </thead>
           <tbody>
+            {/* Newest first: the forecast years on top, muted. */}
+            {[...forecast].reverse().map((r) => (
+              <tr key={r.year} className="forecast">
+                <td>{r.label} (previsão)</td>
+                {SECCOES.map((s) => (
+                  <td key={s.key} className="num">
+                    {r[s.key]}
+                  </td>
+                ))}
+                <td className="num">
+                  <b>{r.total}</b>
+                </td>
+              </tr>
+            ))}
             {[...d.years].reverse().map((r) => (
               <tr key={r.year}>
                 <td>{r.label}</td>

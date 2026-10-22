@@ -287,6 +287,14 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
   | Abaixo do mínimo | red | fewer members than one sub-unidade needs: 5 lobitos, 4 otherwise |
   | Instrutores insuficientes | yellow | fewer instrutores (instrutor cargos in the secção during the year) than estimated sub-unidades |
 
+- **Forecast**: the chart and table carry on for 3 more years, worked out in the browser
+  (`forecast` in [web/src/features/agrupamento/series.ts](web/src/features/agrupamento/series.ts)):
+  a least squares line per secção through the last 6 complete years (the current one is left
+  out, still filling up), rounded, with the total as the sum of the secções. It needs at least 3
+  complete years. TODO: a cohort flow model (current members aged forward with passagem/saída
+  rates pooled across agrupamentos, plus average entrants), since a line can't see a cohort
+  moving up.
+
 The page has a Resumo tab (secção cards with this year's count and the change on last year, the
 chart) and one tab per secção, from `GET /api/agrupamentos/{code}/seccoes/{tipo}` (tipo 1
 Lobitos ... 4 Caminheiros, same access rule). That lists the secção's scouts this ano escutista

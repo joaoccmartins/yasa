@@ -10,14 +10,28 @@ const X_LABEL_PX = 60
 const Y_TICKS = 5
 // Direct labels closer than this are pushed apart.
 const LABEL_GAP = 13
+// Forecast lines are fainter than the actual ones.
+const FORECAST_OPACITY = 0.6
 
-/** Members per ano escutista as lines: one for the total, or one per secção. */
-export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 'seccoes' }) {
+/** Members per ano escutista as lines: one for the total, or one per secção. The forecast years,
+ * if any, follow the actual ones as fainter dashed lines over a "Previsão" band. */
+export function MembersChart({
+  rows: actual,
+  forecast = [],
+  mode,
+}: {
+  rows: YearRow[]
+  forecast?: YearRow[]
+  mode: 'total' | 'seccoes'
+}) {
   const wrap = useRef<HTMLDivElement>(null)
   const width = useWidth(wrap)
   const [active, setActive] = useState<number | null>(null)
   const series = mode === 'total' ? TOTAL : SECCOES
 
+  // Every year on the x axis; from n0 on, they're forecast.
+  const rows = [...actual, ...forecast]
+  const n0 = actual.length
   const n = rows.length
   const left = MARGIN.left
   const right = width - RIGHT[mode]
@@ -63,6 +77,14 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
             </svg>
             Inclui estimativas por idade
           </li>
+          {forecast.length > 0 && (
+            <li>
+              <svg width="16" height="8" aria-hidden>
+                <line x1="0" y1="4" x2="16" y2="4" stroke="var(--ink-muted)" strokeWidth="2" strokeDasharray="4 3" opacity={FORECAST_OPACITY} />
+              </svg>
+              Previsão
+            </li>
+          )}
         </ul>
       )}
       {width > 0 && n > 0 && (
@@ -71,11 +93,20 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
           height={HEIGHT}
           role="img"
           tabIndex={0}
-          aria-label={`Elementos por ano escutista, de ${rows[0].label} a ${last.label}. Use as setas para ver cada ano; os números estão também na tabela abaixo.`}
+          aria-label={`Elementos por ano escutista, de ${rows[0].label} a ${actual[n0 - 1].label}${forecast.length ? `, e a previsão até ${last.label}` : ''}. Use as setas para ver cada ano; os números estão também na tabela abaixo.`}
           onKeyDown={key}
           onFocus={() => setActive((a) => a ?? n - 1)}
           onBlur={() => setActive(null)}
         >
+          {/* The forecast band starts halfway between the last actual year and the first forecast one. */}
+          {forecast.length > 0 && (
+            <g>
+              <rect x={x(n0) - step / 2} y={top} width={right - x(n0) + step / 2} height={bottom - top} fill="var(--contour)" />
+              <text x={x(n0) - step / 2 + 6} y={top} dy="1em" className="chart-axis">
+                Previsão
+              </text>
+            </g>
+          )}
           {axis.ticks.map((t) => (
             <g key={t}>
               <line x1={left} x2={right} y1={y(t)} y2={y(t)} stroke="var(--line)" />
@@ -95,7 +126,7 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
           {series.map((s) => (
             <path
               key={s.key}
-              d={rows.map((r, i) => `${i ? 'L' : 'M'}${x(i)},${y(r[s.key])}`).join('')}
+              d={actual.map((r, i) => `${i ? 'L' : 'M'}${x(i)},${y(r[s.key])}`).join('')}
               fill="none"
               stroke={s.color}
               strokeWidth="2"
@@ -104,10 +135,28 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
               strokeDasharray={s.dashed ? '4 3' : undefined}
             />
           ))}
+          {/* The forecast carries on from the last actual year. */}
+          {forecast.length > 0 &&
+            series.map((s) => (
+              <path
+                key={`${s.key}-forecast`}
+                d={rows
+                  .slice(n0 - 1)
+                  .map((r, i) => `${i ? 'L' : 'M'}${x(n0 - 1 + i)},${y(r[s.key])}`)
+                  .join('')}
+                fill="none"
+                stroke={s.color}
+                strokeWidth="2"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                strokeDasharray="4 3"
+                opacity={FORECAST_OPACITY}
+              />
+            ))}
           {/* Hollow markers: years where part of a secção's count was placed by age, not by a record. */}
           {mode === 'seccoes' &&
             series.filter((s) => isAged(s.key)).flatMap((s) =>
-              rows.map((r, i) =>
+              actual.map((r, i) =>
                 isAged(s.key) && r.byAge[s.key] > 0 ? (
                   <circle
                     key={`${s.key}-${r.year}`}
@@ -159,7 +208,10 @@ export function MembersChart({ rows, mode }: { rows: YearRow[]; mode: 'total' | 
           className="chart-tip"
           style={{ left: x(active), transform: x(active) > width / 2 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)' }}
         >
-          <strong>{row.label}</strong>
+          <strong>
+            {row.label}
+            {active >= n0 && ' (previsão)'}
+          </strong>
           {(mode === 'total' ? TOTAL : [...SECCOES, ...TOTAL]).map((s) => (
             <div key={s.key} className="chart-tip-row">
               <svg width="12" height="8" aria-hidden>

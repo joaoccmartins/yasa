@@ -4,15 +4,9 @@ import { Button } from '../../../ui/Button'
 import { EmptyState } from '../../../ui/EmptyState'
 import { useSeccao } from '../api'
 import type { Scout, SeccaoDetail } from '../schema'
-import { seccaoOf, type Tipo } from '../series'
-import { CriteriaMatrix } from './CriteriaMatrix'
+import { ETAPAS, seccaoOf, STEP_KINDS, type Tipo } from '../series'
+import { CriteriaChart } from './CriteriaChart'
 import { CriteriaLines } from './SeccaoCards'
-
-// What each date in Scout.steps concludes, in API order.
-const STEPS = ['Adesão concluída', '1.ª etapa concluída', '2.ª etapa concluída', '3.ª etapa concluída', 'Anilha de mérito']
-// The board's columns, by Scout.stage: the stage a scout is in. Concluding one moves them to the
-// next; nothing concluded yet = in Adesão. The anilha de mérito is a badge, not a stage.
-const STAGES = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', 'Etapas concluídas']
 
 /** One secção this ano escutista: who is at which progression step, and its especialidades. */
 export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
@@ -41,7 +35,7 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
   }
   // "This year" = on or after the ano escutista's first day. ISO dates compare as text.
   const thisYear = (on: string | null) => on != null && on >= d.yearStart
-  const stepsThisYear = d.scouts.flatMap((sc) => sc.steps.slice(0, 4)).filter(thisYear).length
+  const stepsThisYear = d.scouts.flatMap((sc) => sc.steps).filter(thisYear).length
   const now = d.criteria.find((c) => c.label === d.yearLabel)
   const promessas = d.scouts.filter((sc) => thisYear(sc.promessaOn)).length
   const especialidades = d.scouts.flatMap((sc) => sc.especialidades)
@@ -54,13 +48,13 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
         <CriteriaLines c={now} />
         <div className="tiles">
           <Tile label="Elementos" value={d.scouts.length} />
-          <Tile label="Etapas concluídas este ano" value={stepsThisYear} />
+          <Tile label="Etapas alcançadas este ano" value={stepsThisYear} />
           <Tile label="Promessas este ano" value={promessas} />
           <Tile label="Especialidades este ano" value={especialidades.filter((e) => thisYear(e.on)).length} />
         </div>
       </div>
-      <Board d={d} thisYear={thisYear} />
-      <CriteriaMatrix years={d.criteria} />
+      <Board d={d} names={ETAPAS[tipo]} thisYear={thisYear} />
+      <CriteriaChart years={d.criteria} />
       <EspecialidadesTable scouts={d.scouts} thisYear={thisYear} />
     </div>
   )
@@ -75,31 +69,46 @@ function Tile({ label, value }: { label: string; value: number }) {
   )
 }
 
-/** One column per stage, each scout in the stage they're in now. */
-function Board({ d, thisYear }: { d: SeccaoDetail; thisYear: (on: string | null) => boolean }) {
-  const columns = STAGES.map((label, stage) => ({
+/** One column per step, as SIIE's progresso distribution: each scout at the step of their latest
+ * date. Scouts with no date at all are in the first (adesão) one, which SIIE leaves out. */
+function Board({
+  d,
+  names,
+  thisYear,
+}: {
+  d: SeccaoDetail
+  names: readonly string[]
+  thisYear: (on: string | null) => boolean
+}) {
+  const columns = names.map((label, stage) => ({
     label,
+    kind: STEP_KINDS[stage],
     scouts: d.scouts.filter((sc) => sc.stage === stage),
   }))
   return (
     <section className="panel" aria-labelledby="board-title">
       <h2 id="board-title">Progresso</h2>
       <p className="hint">
-        Cada elemento está na etapa em curso: quem ainda não concluiu nada está na Adesão, e ao concluir uma passa à
-        seguinte. Os destacados mudaram de etapa este ano escutista.
+        Cada elemento está na etapa da sua data mais recente no SIIE, como na distribuição do progresso do SIIE.
+        Quem não tem nenhuma data está na adesão (o SIIE não os conta). Os destacados chegaram à etapa este ano
+        escutista.
       </p>
       <div className="board">
         {columns.map((c) => {
-          const fresh = c.scouts.filter((sc) => sc.stage > 0 && thisYear(sc.steps[sc.stage - 1])).length
+          const fresh = c.scouts.filter((sc) => thisYear(sc.steps[sc.stage])).length
           return (
             <div key={c.label} className="board-column">
               <h3>
-                {c.label} <span className="board-count">{c.scouts.length}</span>
+                <span>
+                  {c.label}
+                  {c.kind && <span className="scout-sub"> {c.kind}</span>}
+                </span>
+                <span className="board-count">{c.scouts.length}</span>
               </h3>
               {/* Always there (blank when none), so the cards line up across columns. */}
               <p className="board-fresh">{fresh > 0 ? `${fresh} este ano` : '\u00a0'}</p>
               {c.scouts.map((sc, i) => (
-                <ScoutCard key={i} sc={sc} thisYear={thisYear} />
+                <ScoutCard key={i} sc={sc} names={names} thisYear={thisYear} />
               ))}
             </div>
           )
@@ -109,9 +118,19 @@ function Board({ d, thisYear }: { d: SeccaoDetail; thisYear: (on: string | null)
   )
 }
 
-/** A scout's card; opens to the dates of each step and their especialidades. */
-function ScoutCard({ sc, thisYear }: { sc: Scout; thisYear: (on: string | null) => boolean }) {
-  const fresh = sc.stage > 0 && thisYear(sc.steps[sc.stage - 1])
+/** A scout's card; opens to the date of each step and their especialidades. */
+function ScoutCard({
+  sc,
+  names,
+  thisYear,
+}: {
+  sc: Scout
+  names: readonly string[]
+  thisYear: (on: string | null) => boolean
+}) {
+  const fresh = thisYear(sc.steps[sc.stage])
+  // No step dated at all: in adesão only because nothing is registered.
+  const undated = sc.steps.every((on) => on == null)
   const espThisYear = sc.especialidades.filter((e) => thisYear(e.on)).length
   return (
     <details className="scout" data-fresh={fresh || undefined}>
@@ -120,8 +139,8 @@ function ScoutCard({ sc, thisYear }: { sc: Scout; thisYear: (on: string | null) 
         {sc.categoria && <span className="scout-sub">{sc.categoria}</span>}
         <span className="scout-tags">
           {fresh && <span className="badge" data-tone="accent">Este ano</span>}
+          {undated && <span className="badge">Sem datas</span>}
           {sc.promessaOn && <span className="badge">Promessa</span>}
-          {sc.steps[4] && <span className="badge">Anilha de mérito</span>}
           {sc.especialidades.length > 0 && (
             <span className="badge">
               {sc.especialidades.length} esp.{espThisYear > 0 && ` (+${espThisYear})`}
@@ -130,7 +149,7 @@ function ScoutCard({ sc, thisYear }: { sc: Scout; thisYear: (on: string | null) 
         </span>
       </summary>
       <dl className="scout-dates">
-        {STEPS.map((label, i) => (
+        {names.map((label, i) => (
           <div key={label}>
             <dt>{label}</dt>
             <dd>{sc.steps[i] ? formatIsoDate(sc.steps[i]!) : '-'}</dd>

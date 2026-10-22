@@ -82,9 +82,9 @@ export type Digest = z.infer<typeof digestSchema>
 export const scoutSchema = z.object({
   totem: z.string(),
   categoria: z.string().nullable(),
-  // When each step was concluded in this secção: adesão, 1.ª-3.ª etapa, anilha de mérito.
+  // The date of each step in this secção: adesão, 1.ª-3.ª etapa, anilha de mérito (see ETAPAS).
   steps: z.array(z.string().nullable()),
-  // The stage they're in: 0 Adesão, 1-3 that etapa, 4 etapas concluídas.
+  // The step they're at: the index of their latest date, 0 (adesão) when there's none.
   stage: z.number(),
   promessaOn: z.string().nullable(),
   // Earned in this secção, newest first.

@@ -83,8 +83,10 @@ pub struct MemberDates {
     pub ultimoano_censos: Option<i32>,
     /// `YYYY-MM-01`: the age fallback.
     pub birth_month: Option<String>,
-    /// Adesão to each secção, in SECCOES order.
-    pub adesoes: Vec<Option<String>>,
+    /// The earliest stage date in each secção (adesão, else the first etapa SIIE holds), in
+    /// SECCOES order: when the member was first registered in it. SIIE often holds a later etapa
+    /// without the adesão (about 110 active members, 2026-10-22), so the adesão alone isn't used.
+    pub first_steps: Vec<Option<String>>,
     /// Promessa in each secção, in SECCOES order.
     pub promessas: Vec<Option<String>>,
     /// Every dated record of each secção: adesão, etapas, anilha, promessa, especialidades.
@@ -221,8 +223,9 @@ fn bucket(m: &MemberDates, year: i32, is_current: bool) -> (Bucket, bool) {
     if let Some((_, b)) = in_year {
         return (b, false);
     }
-    // 4. The secção of the latest adesão by the year's end, unless their age is out of that
-    //    secção's band by more than a year (they moved on, and the next adesão wasn't recorded).
+    // 4. The latest secção they were registered in by the year's end (its earliest stage date),
+    //    unless their age is out of its band by more than a year (they moved on, and the next
+    //    secção wasn't recorded).
     let age = m
         .birth_month
         .as_deref()
@@ -230,7 +233,7 @@ fn bucket(m: &MemberDates, year: i32, is_current: bool) -> (Bucket, bool) {
         .map(|born| year - born);
     let adesao = SECCOES
         .iter()
-        .zip(&m.adesoes)
+        .zip(&m.first_steps)
         .filter_map(|((_, b, ..), d)| on_or_before(d, &year_end).map(|d| (d, *b)))
         .max_by_key(|(d, _)| *d);
     if let Some((_, b)) = adesao
@@ -370,17 +373,19 @@ pub fn criteria(members: &[MemberDates], today: &str) -> Vec<Vec<Criteria>> {
             let promessa_dated =
                 (0..SECCOES.len()).any(|j| dated_at(&m.promessas, j, &year_end).is_some());
             let promised = promessa_dated || (y == current && m.active && !aspirante);
-            let adesao = dated_at(&m.adesoes, i, &year_end);
-            // Progresso por registar. A member who promised in an earlier secção starts this one
-            // in Adesão, so they're only flagged from their second year in it.
+            // Any stage registered in this secção by the year's end.
+            let registered = dated_at(&m.first_steps, i, &year_end);
+            // Progresso por registar: promised, but no stage at all in the secção. A member who
+            // promised in an earlier secção starts this one in Adesão with nothing to register
+            // yet, so they're only flagged from their second year in it.
             let settled =
                 dated_at(&m.promessas, i, &year_end).is_some() || (k > 0 && years[k - 1].1 == b);
-            if promised && adesao.is_none() && settled {
+            if promised && registered.is_none() && settled {
                 c.progresso += 1;
             }
-            // Promessa por registar: a full ano escutista after concluding the adesão to make it,
-            // or already past aspirante this year with no date.
-            let due = adesao.is_some_and(|d| d < year_start.as_str()) || promised;
+            // Promessa por registar: in the progresso for a full ano escutista, or already past
+            // aspirante this year, but no promessa date.
+            let due = registered.is_some_and(|d| d < year_start.as_str()) || promised;
             if due && !promessa_dated {
                 c.promessa += 1;
             }
@@ -411,7 +416,11 @@ pub async fn load(db: &sqlx::PgPool, codes: &[i16]) -> Result<Vec<MemberDates>, 
                 m.present and coalesce(m.situacao like 'Ativo%', false) as active,
                 p.ano_saida, p.ultimoano_censos,
                 m.birth_month::text as birth_month,
-                array[p.ladesao, p.eadesao, p.padesao, p.cadesao]::text[] as adesoes,
+                array[least(p.ladesao, p.letapa1, p.letapa2, p.letapa3, p.lanilhamerito),
+                      least(p.eadesao, p.eetapa1, p.eetapa2, p.eetapa3, p.eanilhamerito),
+                      least(p.padesao, p.petapa1, p.petapa2, p.petapa3, p.panilhamerito),
+                      least(p.cadesao, p.cetapa1, p.cetapa2, p.cetapa3, p.canilhamerito)
+                ]::text[] as first_steps,
                 array[p.promessalobito, p.promessaexplorador, p.promessapioneiro,
                       p.promessacaminheiro]::text[] as promessas,
                 array_remove(array[p.ladesao, p.letapa1, p.letapa2, p.letapa3, p.lanilhamerito,
@@ -552,9 +561,9 @@ pub async fn quality_list(
 struct Scout {
     totem: String,
     categoria: Option<String>,
-    /// The date each of STEPS was concluded in this secção (`YYYY-MM-DD`), null if not yet.
+    /// The date of each of STEPS in this secção (`YYYY-MM-DD`), null if not reached.
     steps: Vec<Option<String>>,
-    /// The stage they're in: 0 Adesão, 1-3 the etapa, 4 etapas concluídas (see `stage`).
+    /// The stage they're at: an index of STEPS (see `stage`).
     #[sqlx(skip)]
     stage: usize,
     promessa_on: Option<String>,
@@ -562,15 +571,12 @@ struct Scout {
     especialidades: sqlx::types::Json<Value>,
 }
 
-/// The stage a scout is in. Each date marks a stage concluded, and the scout then moves to the
-/// next: nothing concluded = in Adesão (0), adesão concluded = in the 1.ª etapa (1), and so on,
-/// up to 3.ª etapa concluded = etapas concluídas (4). By order, not by date: SIIE may hold a later
-/// stage without an earlier one. The anilha de mérito (STEPS[4]) is a distinction, not a stage.
+/// The stage a scout is at: the STEPS index of their latest dated step (0 adesão, e.g. Pata-tenra,
+/// 1-3 the etapas, 4 anilha de mérito), as SIIE's own progresso distribution counts them (checked
+/// against 0005 on 2026-10-22). Nothing dated is 0 too: they're in Adesão, where SIIE leaves them
+/// out. By order, not by date: SIIE may hold a later stage without an earlier one.
 fn stage(steps: &[Option<String>]) -> usize {
-    steps[..4]
-        .iter()
-        .rposition(Option::is_some)
-        .map_or(0, |i| i + 1)
+    steps.iter().rposition(Option::is_some).unwrap_or(0)
 }
 
 /// The NINs of the active members who are in `target` this ano escutista, by the same rule as
@@ -700,7 +706,7 @@ mod tests {
         MemberDates {
             first_seen: "2026-10-20".into(),
             active: true,
-            adesoes: vec![None; 4],
+            first_steps: vec![None; 4],
             promessas: vec![None; 4],
             ..Default::default()
         }
@@ -710,8 +716,8 @@ mod tests {
         Some(s.into())
     }
 
-    /// Adesões in SECCOES order (Lobitos, Exploradores, Pioneiros, Caminheiros).
-    fn adesoes(
+    /// One value per secção, in SECCOES order (Lobitos, Exploradores, Pioneiros, Caminheiros).
+    fn per_seccao(
         l: Option<&str>,
         e: Option<&str>,
         p: Option<&str>,
@@ -732,27 +738,17 @@ mod tests {
     }
 
     #[test]
-    fn stage_is_the_furthest_step_reached() {
-        // Nothing concluded: in Adesão. Adesão concluded: in the 1.ª etapa.
+    fn stage_is_the_latest_dated_step() {
+        // As SIIE counts them: the step of the latest date. Nothing dated: in Adesão too.
         assert_eq!(stage(&[None, None, None, None, None]), 0);
-        assert_eq!(stage(&[d("2024-10-01"), None, None, None, None]), 1);
-        // 3.ª etapa concluded: etapas concluídas. The anilha alone isn't a stage.
+        assert_eq!(stage(&[d("2024-10-01"), None, None, None, None]), 0);
         assert_eq!(
-            stage(&[
-                d("2021-10-01"),
-                d("2022-10-01"),
-                d("2023-10-01"),
-                d("2024-10-01"),
-                None
-            ]),
-            4
+            stage(&[d("2024-10-01"), d("2025-03-01"), None, None, None]),
+            1
         );
-        assert_eq!(stage(&[None, None, None, None, d("2025-06-01")]), 0);
         // A later step without an earlier one still counts as reached.
-        assert_eq!(
-            stage(&[d("2024-10-01"), None, d("2025-06-01"), None, None]),
-            3
-        );
+        assert_eq!(stage(&[None, None, d("2025-06-01"), None, None]), 2);
+        assert_eq!(stage(&[None, None, None, None, d("2025-06-01")]), 4);
     }
 
     #[test]
@@ -784,7 +780,7 @@ mod tests {
         // Lobito from 2022/23, exploradora from March 2025 (2024/25), now an exploradora.
         let m = MemberDates {
             admitted_on: d("2022-11-05"),
-            adesoes: adesoes(Some("2022-11-05"), Some("2025-03-10"), None, None),
+            first_steps: per_seccao(Some("2022-11-05"), Some("2025-03-10"), None, None),
             seccao: d("Exploradores"),
             ..member()
         };
@@ -804,7 +800,7 @@ mod tests {
     fn former_members_end_at_their_last_censo_or_last_record() {
         let left = MemberDates {
             admitted_on: d("2015-10-10"),
-            adesoes: adesoes(Some("2015-10-10"), None, None, None),
+            first_steps: per_seccao(Some("2015-10-10"), None, None, None),
             ano_saida: Some(2018),
             active: false,
             ..member()
@@ -864,7 +860,7 @@ mod tests {
     fn dirigentes_from_promessa_or_cargo() {
         let m = MemberDates {
             admitted_on: d("2020-10-01"),
-            adesoes: adesoes(None, None, None, Some("2020-10-01")),
+            first_steps: per_seccao(None, None, None, Some("2020-10-01")),
             dirigente_since: d("2023-06-01"),
             seccao: d("Caminheiros"),
             ..member()
@@ -925,7 +921,7 @@ mod tests {
         let m = MemberDates {
             admitted_on: d("2019-10-10"),
             birth_month: d("2012-05-01"),
-            adesoes: adesoes(Some("2019-10-10"), None, None, None),
+            first_steps: per_seccao(Some("2019-10-10"), None, None, None),
             ldates: vec!["2019-10-10".into()],
             ultimoano_censos: Some(2024),
             active: false,
@@ -949,7 +945,7 @@ mod tests {
     fn digest_fills_empty_years_and_seccoes_add_up() {
         let old = MemberDates {
             admitted_on: d("2018-10-01"),
-            adesoes: adesoes(Some("2018-10-01"), None, None, None),
+            first_steps: per_seccao(Some("2018-10-01"), None, None, None),
             ano_saida: Some(2020),
             active: false,
             ..member()
@@ -990,8 +986,8 @@ mod tests {
             birth_month: d("2017-01-01"),
             seccao: d("Lobitos"),
             categoria: d(categoria),
-            adesoes: adesoes(adesao, None, None, None),
-            promessas: adesoes(promessa, None, None, None),
+            first_steps: per_seccao(adesao, None, None, None),
+            promessas: per_seccao(promessa, None, None, None),
             ..member()
         };
         let all = [
@@ -1022,8 +1018,8 @@ mod tests {
             birth_month: d("2016-01-01"),
             seccao: d("Exploradores"),
             categoria: d("Explorador"),
-            adesoes: adesoes(Some("2023-01-01"), None, None, None),
-            promessas: adesoes(Some("2023-05-01"), None, None, None),
+            first_steps: per_seccao(Some("2023-01-01"), None, None, None),
+            promessas: per_seccao(Some("2023-05-01"), None, None, None),
             ..member()
         };
         let exp = &criteria(&[moved], TODAY)[1];
@@ -1119,7 +1115,7 @@ mod db_tests {
         let a = members.iter().find(|m| m.nin == "TEST92A").unwrap();
         // The record arrays: adesão in each secção, nulls dropped, especialidades included.
         assert_eq!(
-            a.adesoes,
+            a.first_steps,
             vec![
                 Some("2022-11-05".into()),
                 Some("2025-03-10".into()),
@@ -1157,7 +1153,7 @@ mod db_tests {
         let a = &v["scouts"][0];
         assert_eq!(
             (a["totem"].as_str(), a["stage"].as_u64()),
-            (Some("A"), Some(1))
+            (Some("A"), Some(0))
         );
         assert_eq!(a["steps"][0], "2025-03-10");
         assert_eq!(

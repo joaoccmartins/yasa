@@ -39,3 +39,14 @@ export const CRITERIA = [
     hint: 'Concluíram a adesão há mais de um ano escutista, ou já não são aspirantes, mas não têm a promessa no SIIE.',
   },
 ] as const
+
+// The progresso steps of each secção as SIIE names them, in Scout.steps order: adesão, 1.ª-3.ª
+// etapa, anilha de mérito. A scout is at the step of their latest date (Scout.stage).
+export const ETAPAS: Record<Tipo, readonly string[]> = {
+  1: ['Pata-tenra', 'Lobo Valente', 'Lobo Cortês', 'Lobo Amigo', 'Anilha de Mérito'],
+  2: ['Apelo', 'Aliança', 'Rumo', 'Descoberta', 'Anilha de Mérito'],
+  3: ['Desprendimento', 'Conhecimento', 'Vontade', 'Construção', 'Anilha de Mérito'],
+  4: ['Caminho', 'Comunidade', 'Serviço', 'Partida', 'Anilha de Mérito'],
+}
+// What each step is, the same in every secção.
+export const STEP_KINDS = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', null] as const

@@ -275,6 +275,8 @@ h2 {
 /* Page layout */
 .page {
   display: grid;
+  /* minmax(0, 1fr): wide content (tables, charts) scrolls inside its box instead of widening the page. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
 }
 .page-head {
@@ -440,6 +442,7 @@ h2 {
 /* Access summary (stat tiles) */
 .summary {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 .summary h2 {
@@ -711,6 +714,7 @@ details summary {
 }
 .seccao-view {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
 }
 .seccao-view > .panel:first-child {
@@ -860,15 +864,78 @@ details > .hint {
   gap: var(--space-4);
   max-width: 640px;
 }
-/* Quality criteria matrix: flagged cells tinted by the share of the secção flagged. */
-.table.criteria td[data-flag] {
-  background: color-mix(in oklab, var(--danger) var(--flag), transparent);
+/* Quality criteria chart: criterion labels on the left, a scrollable grid of bars on the right
+   whose columns are a fifth of its width each, so the last 5 years fill it. */
+.crit {
+  display: grid;
+  grid-template-columns: minmax(140px, 240px) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+.crit-labels,
+.crit-grid {
+  display: grid;
+  grid-template-rows: 120px 120px 44px;
+  row-gap: var(--space-2);
+}
+.crit-labels > div {
+  align-self: center;
+  font-size: 14px;
+}
+.crit-labels .sub,
+.crit-year .sub {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.crit-scroll {
+  overflow-x: auto;
+  container-type: inline-size;
+}
+.crit-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.crit-grid {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(var(--cols), calc((100cqw - 4 * var(--space-2)) / 5));
+  column-gap: var(--space-2);
+}
+.crit-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+.crit-value {
   font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
-.table.criteria td:first-child {
-  white-space: normal;
-  min-width: 220px;
+.crit-value[data-zero] {
+  color: var(--ink-muted);
+  font-weight: 400;
 }
-.table.criteria td {
-  height: auto;
+.crit-bar {
+  width: min(56%, 40px);
+  border-radius: 4px 4px 0 0;
+  background: var(--danger);
+}
+.crit-year {
+  text-align: center;
+  font-size: 13px;
+}
+@media (max-width: 480px) {
+  .crit {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+  .crit-labels .sub,
+  .crit-century {
+    display: none;
+  }
+  .crit-year {
+    font-size: 11px;
+  }
 }

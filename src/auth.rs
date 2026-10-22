@@ -378,7 +378,7 @@ pub fn login_key(secret: &[u8], identifier: &str) -> Vec<u8> {
 
 /// HMAC-SHA256(secret, text). Callers prefix the text by purpose ("fail-ip:..."), so hashes for
 /// different uses can't be matched against each other.
-fn keyed_hash(secret: &[u8], text: &str) -> Vec<u8> {
+pub(crate) fn keyed_hash(secret: &[u8], text: &str) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(text.as_bytes());
     mac.finalize().into_bytes().to_vec()

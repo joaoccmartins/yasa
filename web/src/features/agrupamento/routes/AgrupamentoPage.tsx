@@ -1,24 +1,28 @@
 import { useState, type ReactNode } from 'react'
 import { agrupamentoName, formatAgrupamento, formatCode, formatIsoDate, formatUnixTime } from '../../../lib/format'
+import { navigate, paths, type Route } from '../../../lib/router'
 import { Button } from '../../../ui/Button'
 import { EmptyState } from '../../../ui/EmptyState'
+import { Link } from '../../../ui/Link'
 import { Segmented } from '../../../ui/Segmented'
 import type { Me } from '../../auth/schema'
 import { useDigest } from '../api'
 import { MembersChart } from '../components/MembersChart'
+import { MemberView } from '../components/MemberView'
 import { SeccaoCards } from '../components/SeccaoCards'
 import { SeccaoView } from '../components/SeccaoView'
 import type { Digest } from '../schema'
-import { isAged, SECCOES, seccaoOf, TIPOS, type Tipo } from '../series'
+import { isAged, SECCOES, seccaoOf, tipoOfSlug, TIPOS } from '../series'
 
 type Mode = 'total' | 'seccoes'
+type AgrupamentoRoute = Extract<Route, { name: 'agrupamento' }>
 
-/** One agrupamento's digest: its data and its members per ano escutista, since the first on record. */
-export function AgrupamentoPage({ me }: { me: Me }) {
+/** One agrupamento's digest, a secção of it, or one of its members, as the URL says. */
+export function AgrupamentoPage({ me, route }: { me: Me; route: AgrupamentoRoute }) {
   // Only whole agrupamentos have imports, so only those have a digest.
   const whole = me.access.agrupamentos.filter((a) => a.seccao == null)
-  const [picked, setPicked] = useState(whole[0]?.code)
-  const code = whole.some((a) => a.code === picked) ? picked : whole[0]?.code
+  // /agrupamentos alone (or one not held whole) opens the first one.
+  const code = whole.some((a) => a.code === route.code) ? route.code : (whole[0]?.code ?? null)
 
   return (
     <section className="page">
@@ -30,10 +34,10 @@ export function AgrupamentoPage({ me }: { me: Me }) {
             em que estava no fim do ano.
           </p>
         </div>
-        {whole.length > 1 && (
+        {whole.length > 1 && code != null && (
           <label className="picker">
             <span>Agrupamento</span>
-            <select value={code} onChange={(e) => setPicked(Number(e.target.value))}>
+            <select value={code} onChange={(e) => navigate(paths.agrupamento(Number(e.target.value)))}>
               {whole.map((a) => (
                 <option key={a.code} value={a.code}>
                   {formatAgrupamento(a.code, a.name)}
@@ -49,17 +53,16 @@ export function AgrupamentoPage({ me }: { me: Me }) {
           body="O resumo só aparece para agrupamentos que a sua conta SIIE vê por inteiro. Com acesso a uma só secção, os elementos não são importados."
         />
       ) : (
-        <DigestView key={code} code={code} />
+        <DigestView key={code} code={code} route={route} />
       )}
     </section>
   )
 }
 
-function DigestView({ code }: { code: number }) {
+function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) {
   const digest = useDigest(code)
   const [mode, setMode] = useState<Mode>('total')
-  // 'resumo' = the whole agrupamento; a tipo = that secção's detail.
-  const [view, setView] = useState<'resumo' | Tipo>('resumo')
+  const tipo = route.seccao ? tipoOfSlug(route.seccao) : null
 
   if (digest.isPending) {
     return (
@@ -89,31 +92,38 @@ function DigestView({ code }: { code: number }) {
       ) : (
         <>
           <nav className="tabs" aria-label="Secções">
-            {(['resumo', ...TIPOS] as const).map((v) => (
-              <button
-                key={v}
+            <Link to={paths.agrupamento(code)} className="nav-link" aria-current={!tipo && !route.member ? 'page' : undefined}>
+              Resumo
+            </Link>
+            {TIPOS.map((t) => (
+              <Link
+                key={t}
+                to={paths.seccao(code, seccaoOf(t).key)}
                 className="nav-link"
-                aria-current={view === v ? 'page' : undefined}
-                onClick={() => setView(v)}
+                aria-current={tipo === t ? 'page' : undefined}
               >
-                {v === 'resumo' ? 'Resumo' : seccaoOf(v).label}
-              </button>
+                {seccaoOf(t).label}
+              </Link>
             ))}
           </nav>
-          {view === 'resumo' ? (
+          {route.member ? (
+            <MemberView key={route.member} code={code} memberRef={route.member} />
+          ) : tipo ? (
+            <SeccaoView key={tipo} code={code} tipo={tipo} />
+          ) : (
             <>
-              <SeccaoCards years={d.years} criteria={d.criteria} onOpen={setView} />
+              <SeccaoCards code={code} years={d.years} criteria={d.criteria} />
               <div className="panel digest">
                 <Segmented
-            name="digest-mode"
-            legend="Mostrar"
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: 'total', label: 'Total' },
-              { value: 'seccoes', label: 'Por secção' },
-            ]}
-          />
+                  name="digest-mode"
+                  legend="Mostrar"
+                  value={mode}
+                  onChange={setMode}
+                  options={[
+                    { value: 'total', label: 'Total' },
+                    { value: 'seccoes', label: 'Por secção' },
+                  ]}
+                />
                 <MembersChart rows={d.years} mode={mode} />
                 {d.undated > 0 && (
                   <p className="hint">
@@ -125,8 +135,6 @@ function DigestView({ code }: { code: number }) {
                 <YearsTable d={d} />
               </div>
             </>
-          ) : (
-            <SeccaoView key={view} code={code} tipo={view} />
           )}
         </>
       )}

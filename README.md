@@ -291,6 +291,33 @@ their **latest date**, exactly as SIIE's progresso distribution counts them (che
 0005 on 2026-10-22). Scouts with no date at all are in the adesão step, which SIIE leaves out. Steps, promessas and especialidades on or after October 1 count as "this
 year".
 
+On top of each secção tab, its **equipa de animação**: the active adults (Dirigente, Aspirante or
+Noviço a Dirigente) holding an active cargo of that secção, with the elementos per dirigente and
+the average ages, and **instrutores per sub-unidade** (chefes and chefes adjuntos lead the whole
+unidade, so they're left out of that ratio). SIIE has no sub-unidades (bandos, patrulhas,
+equipas, tribos) that we know of, so `digest::siie_subunidades` is a placeholder returning none and
+`estimate_subunidades` works them out from the number of elementos: 4 to 8 each (5 to 8 for
+lobitos), the count whose average is closest to 6, split evenly (12 = 2 x 6, 15 = 3 x 5).
+
+Every member has an **identicon**: a 5 x 5 mirrored pattern in one of the four palette colours,
+drawn in the browser from their opaque ref ([web/src/ui/Identicon.tsx](web/src/ui/Identicon.tsx)).
+
+Every cargo has a `seccao_tipo` (`member_reports::cargo_seccao`): from its sigla for the chefes and
+adjuntos (CALC/CALCADJ, CGE/CGEADJ, CGP/CGPADJ, CC/CCADJ), else from words in the cargo's
+free-text `descricao` that name one secção ("Alcateia", "Expedição", "2.ª", "segunda"...), which is
+how an instrutor's secção is known. The descrição itself is never stored. SIIE keeps past cargos
+too, so a dirigente's page shows their **percurso** through the secções over the years.
+
+Each member has a page, `GET /api/agrupamentos/{code}/elementos/{ref}`: their progresso in every
+secção, and year by year their secção (marked when placed by age), steps, especialidades, cargos,
+cursos and atividades. `ref` is an HMAC of the NIN with the server's key, so no NIN ever reaches
+the browser or a URL.
+
+**Links:** every screen has its own URL (`/`, `/acessos`, `/agrupamentos/0028`,
+`/agrupamentos/0028/lobitos`, `/agrupamentos/0028/elementos/<ref>`), from a small History API
+router in [web/src/lib/router.ts](web/src/lib/router.ts). Vercel serves `index.html` for any of them.
+They stay behind the login: shareable with other YASA users, never indexable.
+
 Colours: the whole app uses four Sanzo Wada colours (Raw Sienna, Benzol Green, Deep Lyons Blue,
 Apricot Yellow), defined once at the top of [web/src/styles/tokens.css](web/src/styles/tokens.css)
 with a light and a dark step each. Everything else derives from them.

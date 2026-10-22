@@ -21,13 +21,16 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use secrecy::ExposeSecret;
+
 use crate::{
     AppState,
-    auth::{ApiError, CurrentAccount, db_error},
+    auth::{ApiError, CurrentAccount, db_error, keyed_hash},
 };
 
 /// Where a member is counted in one year.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Bucket {
     Lobitos,
     Exploradores,
@@ -559,6 +562,17 @@ pub async fn quality_list(
 #[derive(Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 struct Scout {
+    #[serde(skip)]
+    nin: String,
+    /// Opaque id for the member page (see `member_ref`).
+    #[sqlx(skip)]
+    #[serde(rename = "ref")]
+    member_ref: String,
+    #[serde(skip)]
+    birth_month: Option<String>,
+    /// Whole years today.
+    #[sqlx(skip)]
+    age: Option<i32>,
     totem: String,
     categoria: Option<String>,
     /// The date of each of STEPS in this secção (`YYYY-MM-DD`), null if not reached.
@@ -618,7 +632,8 @@ pub async fn seccao(
         .map(|c| format!("p.{prefix}{c}::text"))
         .collect();
     let mut scouts: Vec<Scout> = sqlx::query_as(&format!(
-        "select m.totem, m.categoria, array[{}] as steps, p.{promessa}::text as promessa_on,
+        "select m.nin, m.birth_month::text as birth_month, m.totem, m.categoria,
+                array[{}] as steps, p.{promessa}::text as promessa_on,
                 coalesce((
                     select json_agg(json_build_object('name', e.especialidade, 'on', e.achieved_on)
                                     order by e.achieved_on desc nulls last, e.especialidade)
@@ -634,8 +649,24 @@ pub async fn seccao(
     .fetch_all(db)
     .await
     .map_err(db_error)?;
+    let secret = s.login_key_secret.expose_secret();
     for sc in &mut scouts {
         sc.stage = stage(&sc.steps);
+        sc.member_ref = member_ref(secret, &sc.nin);
+        sc.age = age(sc.birth_month.as_deref(), &today);
+    }
+    let mut adults = seccao_adults(db, code, tipo).await.map_err(db_error)?;
+    // SIIE's own sub-unidades when it has them, else estimated from the number of elementos.
+    let subunidades = match siie_subunidades(db, code, tipo).await.map_err(db_error)? {
+        Some(sizes) => json!({"sizes": sizes, "estimated": false}),
+        None => {
+            let sizes = estimate_subunidades(scouts.len() as u32, subunidade_min(tipo));
+            json!({"sizes": sizes, "estimated": true})
+        }
+    };
+    for a in &mut adults {
+        a.member_ref = member_ref(secret, &a.nin);
+        a.age = age(a.birth_month.as_deref(), &today);
     }
 
     // The ano escutista these scouts are counted in: from October 1 of its first year.
@@ -644,8 +675,199 @@ pub async fn seccao(
         "tipo": tipo,
         "yearLabel": year_label(year),
         "yearStart": format!("{year}-10-01"),
+        "subunidades": subunidades,
         "scouts": scouts,
+        "adults": adults,
         "criteria": criteria(&members, &today).swap_remove(i),
+    })))
+}
+
+/// An adult tied to a secção by an active cargo there (chefe, adjunto, or one whose descrição
+/// names the secção, e.g. an instrutor's: see member_reports::cargo_seccao).
+#[derive(Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct Adult {
+    #[serde(skip)]
+    nin: String,
+    #[sqlx(skip)]
+    #[serde(rename = "ref")]
+    member_ref: String,
+    #[serde(skip)]
+    birth_month: Option<String>,
+    #[sqlx(skip)]
+    age: Option<i32>,
+    totem: String,
+    /// Dirigente, Aspirante a Dirigente, Noviço a Dirigente...
+    categoria: Option<String>,
+    /// Their cargos in the secção, e.g. "Chefe de Alcateia".
+    cargos: String,
+    /// Instrutor of the secção (sigla I): the ones counted per sub-unidade. Chefes and chefes
+    /// adjuntos lead the whole unidade, so they aren't.
+    instrutor: bool,
+}
+
+/// The active adults holding an active cargo of secção `tipo` in the agrupamento.
+async fn seccao_adults(db: &sqlx::PgPool, code: i16, tipo: i16) -> Result<Vec<Adult>, sqlx::Error> {
+    sqlx::query_as(
+        "select m.nin, m.birth_month::text as birth_month, m.totem, m.categoria,
+                string_agg(distinct c.cargo, ', ') as cargos,
+                bool_or(c.sigla_cargo = 'I') as instrutor
+         from member_cargos c join members m on m.nin = c.nin
+         where c.agrupamento = $1 and c.active and c.seccao_tipo = $2
+           and m.present and m.situacao like 'Ativo%'
+         group by m.nin, m.birth_month, m.totem, m.categoria
+         order by m.totem",
+    )
+    .bind(code)
+    .bind(tipo)
+    .fetch_all(db)
+    .await
+}
+
+/// Sub-unidades (bandos, patrulhas, equipas, tribos) have at most 8 members and at least 4 (5 in
+/// the Alcateia), and agrupamentos aim for about 6 each.
+const SUBUNIDADE_MAX: u32 = 8;
+const SUBUNIDADE_TARGET: f64 = 6.0;
+fn subunidade_min(tipo: i16) -> u32 {
+    if tipo == 1 { 5 } else { 4 }
+}
+
+/// The sub-unidades a secção of `members` most likely has, as their sizes, largest first.
+/// - Possible counts: those whose even split fits min..=max (n from ceil(m/max) to floor(m/min)).
+/// - Of those, the one whose average size is closest to 6; a tie goes to fewer, larger ones.
+///   12 = 2 x 6, not 3 x 4; 15 = 3 x 5; 17 = 6 + 6 + 5.
+/// - None fits (under the minimum, or e.g. 9 lobitos: 1 x 9 is too big, 5 + 4 too small): as
+///   few as stay under the maximum, so one incomplete sub-unidade for a small secção.
+pub fn estimate_subunidades(members: u32, min: u32) -> Vec<u32> {
+    if members == 0 {
+        return Vec::new();
+    }
+    let distance = |n: u32| (f64::from(members) / f64::from(n) - SUBUNIDADE_TARGET).abs();
+    let n = (members.div_ceil(SUBUNIDADE_MAX)..=members / min)
+        .filter(|n| *n > 0)
+        // min_by keeps the first of equals: the smaller count.
+        .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
+        .unwrap_or_else(|| members.div_ceil(SUBUNIDADE_MAX).max(1));
+    // Even split: the first `extra` sub-unidades get one more.
+    let (base, extra) = (members / n, members % n);
+    (0..n).map(|k| base + u32::from(k < extra)).collect()
+}
+
+/// The secção's sub-unidades as SIIE records them, as their sizes.
+/// TODO(siie): no SIIE report of sub-unidades has been found yet, and some agrupamentos may not
+/// fill it either. When one is, import it (a column per member) and read it here; until then this
+/// is None and `estimate_subunidades` gives the count.
+async fn siie_subunidades(
+    _db: &sqlx::PgPool,
+    _code: i16,
+    _tipo: i16,
+) -> Result<Option<Vec<u32>>, sqlx::Error> {
+    Ok(None)
+}
+
+/// An opaque, stable id for a member in URLs: HMAC of the NIN with the server's key, cut to 12
+/// bytes. The NIN never leaves the server, and the id can't be turned back into one without the
+/// key.
+fn member_ref(secret: &[u8], nin: &str) -> String {
+    hex::encode(&keyed_hash(secret, &format!("member-ref:{nin}"))[..12])
+}
+
+/// Whole years from a `YYYY-MM-01` birth month to `today`, counting the birthday month as reached.
+fn age(birth_month: Option<&str>, today: &str) -> Option<i32> {
+    let b = birth_month?;
+    let (by, bm): (i32, u32) = (b.get(..4)?.parse().ok()?, b.get(5..7)?.parse().ok()?);
+    let (ty, tm): (i32, u32) = (
+        today.get(..4)?.parse().ok()?,
+        today.get(5..7)?.parse().ok()?,
+    );
+    Some(ty - by - i32::from(tm < bm))
+}
+
+/// GET /api/agrupamentos/{code}/elementos/{ref}: one member's history, year by year: their secção
+/// (and whether age placed them), progresso, promessa, especialidades, cargos, cursos and
+/// atividades. Same access rule as the digest; the member must be in this agrupamento.
+pub async fn member(
+    State(s): State<AppState>,
+    acc: CurrentAccount,
+    Path((code, member_id)): Path<(i16, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let db = &s.db;
+    granted(db, acc.id, code)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(not_whole)?;
+    let today = today(db).await?;
+    let secret = s.login_key_secret.expose_secret();
+    let members = load(db, &[code]).await.map_err(db_error)?;
+    let m = members
+        .iter()
+        .find(|m| member_ref(secret, &m.nin) == member_id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Elemento não encontrado."))?;
+
+    // Column names come from SECCOES / STEPS, never from the request.
+    let steps: Vec<String> = SECCOES
+        .iter()
+        .map(|(_, _, prefix, promessa)| {
+            let cols: Vec<String> = STEPS.iter().map(|c| format!("p.{prefix}{c}")).collect();
+            format!("array[{}, p.{promessa}]::text[]", cols.join(", "))
+        })
+        .collect();
+    // ano escutista of a date: October onwards starts a new one (as `scout_year`).
+    let year_of = |col: &str| {
+        format!(
+            "(extract(year from {col}) - case when extract(month from {col}) >= 10 then 0 else 1 end)::int"
+        )
+    };
+    let (info,): (Value,) = sqlx::query_as(&format!(
+        "select json_build_object(
+            'totem', m.totem, 'categoria', m.categoria, 'seccao', m.seccao,
+            'situacao', m.situacao, 'present', m.present,
+            'admittedOn', m.admitted_on, 'promisedOn', m.promised_on,
+            -- per secção (SECCOES order): the STEPS dates, then the promessa
+            'progresso', json_build_array({steps}),
+            'especialidades', coalesce((
+                select json_agg(json_build_object('tipo', e.seccao_tipo, 'name', e.especialidade,
+                                                  'on', e.achieved_on)
+                                order by e.achieved_on nulls last, e.especialidade)
+                from member_especialidades e where e.nin = m.nin), '[]'),
+            'cargos', coalesce((
+                select json_agg(json_build_object('cargo', c.cargo, 'seccaoTipo', c.seccao_tipo,
+                                                  'agrupamento', c.agrupamento,
+                                                  'startedOn', c.started_on, 'endedOn', c.ended_on,
+                                                  'active', c.active)
+                                order by c.started_on nulls last)
+                from member_cargos c where c.nin = m.nin), '[]'),
+            'cursos', coalesce((
+                select json_agg(json_build_object('curso', c.curso, 'on', c.completed_on)
+                                order by c.completed_on nulls last)
+                from member_cursos c where c.nin = m.nin), '[]'),
+            'atividades', coalesce((
+                select json_agg(a order by a.year)
+                from (select {year} as year, count(*) as count,
+                             coalesce(sum(noites), 0) as noites,
+                             coalesce(sum(noites_campo), 0) as \"noitesCampo\"
+                      from member_atividades where nin = m.nin and started_on is not null
+                      group by 1) a), '[]'))
+         from members m left join member_progress p on p.nin = m.nin
+         where m.nin = $1",
+        steps = steps.join(", "),
+        year = year_of("started_on"),
+    ))
+    .bind(&m.nin)
+    .fetch_one(db)
+    .await
+    .map_err(db_error)?;
+
+    // The secção they were counted in each year, as in the digest.
+    let years: Vec<Value> = member_years(m, &today)
+        .into_iter()
+        .map(|(y, b, by_age)| json!({"year": y, "label": year_label(y), "bucket": b, "byAge": by_age}))
+        .collect();
+    Ok(Json(json!({
+        "ref": member_id,
+        "age": age(m.birth_month.as_deref(), &today),
+        "info": info,
+        "years": years,
     })))
 }
 
@@ -766,6 +988,42 @@ mod tests {
             m("C", "Lobitos", false),
         ];
         assert_eq!(current_members(&all, Bucket::Lobitos, TODAY), vec!["A"]);
+    }
+
+    #[test]
+    fn subunidades_aim_at_six_within_the_limits() {
+        assert_eq!(estimate_subunidades(12, 4), vec![6, 6]);
+        assert_eq!(estimate_subunidades(15, 4), vec![5, 5, 5]);
+        assert_eq!(estimate_subunidades(17, 4), vec![6, 6, 5]);
+        assert_eq!(estimate_subunidades(8, 4), vec![8]);
+        assert_eq!(estimate_subunidades(40, 5), vec![6, 6, 6, 6, 6, 5, 5]);
+        assert_eq!(estimate_subunidades(10, 5), vec![5, 5]);
+        // Too few for one, or no split that fits: as few as stay under 8.
+        assert_eq!(estimate_subunidades(3, 5), vec![3]);
+        assert_eq!(estimate_subunidades(9, 5), vec![5, 4]);
+        assert!(estimate_subunidades(0, 4).is_empty());
+        // Every fitting answer stays within 4..=8.
+        for m in 8..=80 {
+            let sizes = estimate_subunidades(m, 4);
+            assert_eq!(sizes.iter().sum::<u32>(), m);
+            assert!(sizes.iter().all(|s| (4..=8).contains(s)), "{m}: {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn age_counts_the_birthday_month() {
+        assert_eq!(age(d("2016-10-01").as_deref(), "2026-10-21"), Some(10));
+        assert_eq!(age(d("2016-11-01").as_deref(), "2026-10-21"), Some(9));
+        assert_eq!(age(None, "2026-10-21"), None);
+    }
+
+    #[test]
+    fn member_ref_is_stable_and_hides_the_nin() {
+        let r = member_ref(&[1; 32], "1234567890123");
+        assert_eq!(r, member_ref(&[1; 32], "1234567890123"));
+        assert_ne!(r, member_ref(&[2; 32], "1234567890123"));
+        assert_eq!(r.len(), 24);
+        assert!(!r.contains("1234567890123"));
     }
 
     #[test]
@@ -1073,8 +1331,15 @@ mod db_tests {
                 ('TEST92A', '2022-11-05', '2025-03-10')",
             "insert into member_progress (nin, ladesao, ano_saida) values
                 ('TEST92B', '2021-10-10', 2023)",
+            "insert into members (nin, totem, totem_from_siie, agrupamento, situacao, seccao,
+                                  categoria, admitted_on, birth_month, present)
+             values ('TEST92C', 'C', false, 9201, 'Ativo', 'Dirigentes', 'Dirigente',
+                     '2026-10-01', '1990-03-01', true)",
             "insert into member_cargos (siie_id, nin, agrupamento, started_on)
              values (-9201, 'TEST92B', 9201, '2022-10-15')",
+            "insert into member_cargos (siie_id, nin, cargo, sigla_cargo, seccao_tipo, agrupamento,
+                                        started_on, active)
+             values (-9202, 'TEST92C', 'Chefe de Expedição', 'CGE', 2, 9201, '2026-10-01', true)",
             "insert into member_especialidades (nin, seccao_tipo, especialidade, achieved_on)
              values ('TEST92A', 2, 'Nadador', '2025-06-01'), ('TEST92A', 1, 'Lobito X', null)",
         ] {
@@ -1160,6 +1425,32 @@ mod db_tests {
             a["especialidades"],
             json!([{"name": "Nadador", "on": "2025-06-01"}])
         );
+        // C leads the expedição: shown on top, with their cargo.
+        assert_eq!(v["adults"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            (
+                v["adults"][0]["totem"].as_str(),
+                v["adults"][0]["cargos"].as_str()
+            ),
+            (Some("C"), Some("Chefe de Expedição"))
+        );
+        // A chefe isn't an instrutor; one explorador makes one (incomplete) sub-unidade.
+        assert_eq!(v["adults"][0]["instrutor"], false);
+        assert_eq!(v["subunidades"], json!({"sizes": [1], "estimated": true}));
+        assert!(!v.to_string().contains("TEST92"), "no NIN in the answer");
+
+        // A's page, by the ref from the secção view.
+        let a_ref = v["scouts"][0]["ref"].as_str().unwrap().to_owned();
+        let Json(page) = member(State(state.clone()), acc(), Path((9201, a_ref)))
+            .await
+            .unwrap_or_else(|e| panic!("{}", e.1));
+        assert_eq!(page["info"]["totem"], "A");
+        assert_eq!(page["info"]["progresso"][1][0], "2025-03-10");
+        assert_eq!(page["info"]["especialidades"][0]["name"], "Nadador");
+        assert_eq!(page["years"][2]["bucket"], "exploradores");
+        let missing = member(State(state.clone()), acc(), Path((9201, "00".into()))).await;
+        assert_eq!(missing.err().map(|e| e.0), Some(StatusCode::NOT_FOUND));
+
         // Adesão concluded, explorador past aspirante with no promessa: flagged this year.
         assert_eq!(
             v["criteria"].as_array().unwrap().last().unwrap()["promessa"],

@@ -18,7 +18,7 @@ export const TOTAL: Series[] = [{ key: 'total', label: 'Total', color: 'var(--ac
 // The secções that have a detail view: tipo as the API takes it (1 Lobitos ... 4 Caminheiros).
 export const TIPOS = [1, 2, 3, 4] as const
 export type Tipo = (typeof TIPOS)[number]
-export const seccaoOf = (tipo: Tipo) => SECCOES[tipo - 1]
+export const seccaoOf = (tipo: number) => SECCOES[tipo - 1]
 
 // The secções whose counts can include age estimates (YearRow.byAge).
 export type AgedKey = keyof YearRow['byAge']
@@ -50,3 +50,16 @@ export const ETAPAS: Record<Tipo, readonly string[]> = {
 }
 // What each step is, the same in every secção.
 export const STEP_KINDS = ['Adesão', '1.ª etapa', '2.ª etapa', '3.ª etapa', null] as const
+
+// The secção of a URL slug (its series key, e.g. 'lobitos'), or null if it isn't one.
+export const tipoOfSlug = (slug: string): Tipo | null => TIPOS.find((t) => seccaoOf(t).key === slug) ?? null
+
+// The ano escutista a YYYY-MM-DD date falls in (as the backend's scout_year): October onwards
+// starts a new one, so 2024 = 2024/25.
+export function scoutYear(iso: string) {
+  const year = Number(iso.slice(0, 4))
+  return Number(iso.slice(5, 7)) >= 10 ? year : year - 1
+}
+
+// What each secção calls its sub-unidades.
+export const SUBUNIDADES: Record<Tipo, string> = { 1: 'Bandos', 2: 'Patrulhas', 3: 'Equipas', 4: 'Tribos' }

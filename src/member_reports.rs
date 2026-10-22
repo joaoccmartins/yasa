@@ -33,6 +33,9 @@ pub enum Kind {
     Number,
     /// One code per row, gathered over a member's rows into a sorted `smallint[]`.
     CodeList,
+    /// The secção (1-4) of a cargo, by `cargo_seccao`: from the row's `siglacargo`, else from
+    /// words in this key's free text. Only the number is kept, never the text.
+    Seccao,
 }
 
 impl Kind {
@@ -44,6 +47,7 @@ impl Kind {
             Kind::Code => "smallint",
             Kind::Number => "integer",
             Kind::CodeList => "smallint[]",
+            Kind::Seccao => "smallint",
         }
     }
 }
@@ -130,7 +134,9 @@ pub const RECORD_REPORTS: &[RecordReport] = &[
     RecordReport { report: "elementos/cargos/cargos-ativos", table: "member_cargos", label: "cargo",
         columns: &[("cargo", "cargo", Text), ("siglacargo", "sigla_cargo", Text),
                    ("agrup", "agrupamento", Code), ("datainicio", "started_on", Date),
-                   ("datafim", "ended_on", Date), ("activo", "active", Flag)],
+                   ("datafim", "ended_on", Date), ("activo", "active", Flag),
+                   // Only the secção it names; the free text is dropped (see cargo_seccao).
+                   ("descricao", "seccao_tipo", Seccao)],
         only: None, own_column: Some("agrupamento") },
     // Courses (formação). The ordem de serviço is not read.
     RecordReport { report: "elementos/cursos/lista-cursos", table: "member_cursos", label: "curso",
@@ -315,7 +321,51 @@ fn read(row: &Map<String, Value>, key: &'static str, kind: Kind) -> Result<Value
         Number => text(row, key)
             .and_then(|t| t.parse::<f64>().ok())
             .map_or(Value::Null, |n| Value::from(n.round() as i64)),
+        Seccao => cargo_seccao(
+            text(row, "siglacargo").as_deref(),
+            text(row, key).as_deref(),
+        )
+        .map_or(Value::Null, Value::from),
     })
+}
+
+/// The chefe and chefe adjunto cargos of each secção, by sigla (checked on 2026-10-22).
+pub const SECCAO_SIGLAS: [(&str, i16); 8] = [
+    ("CALC", 1),
+    ("CALCADJ", 1),
+    ("CGE", 2),
+    ("CGEADJ", 2),
+    ("CGP", 3),
+    ("CGPADJ", 3),
+    ("CC", 4),
+    ("CCADJ", 4),
+];
+/// Words that name a secção in a cargo's free-text descrição (an instrutor's, say): its unidade,
+/// its members, or its number ("2.ª secção", "segunda").
+const SECCAO_WORDS: [(&[&str], i16); 4] = [
+    (&["alcateia", "lobit", "1ª", "1.ª", "primeira"], 1),
+    (&["expedi", "explor", "2ª", "2.ª", "segunda"], 2),
+    (&["comunidade", "pionei", "3ª", "3.ª", "terceira"], 3),
+    (&["clã", "cla ", "caminh", "4ª", "4.ª", "quarta"], 4),
+];
+
+/// The secção a cargo belongs to: its sigla if it's a secção's chefe or adjunto, else the one
+/// secção its descrição names. None for a cargo of no secção, or a descrição naming none or
+/// several.
+pub fn cargo_seccao(sigla: Option<&str>, descricao: Option<&str>) -> Option<i16> {
+    if let Some(&(_, tipo)) = SECCAO_SIGLAS.iter().find(|(s, _)| Some(*s) == sigla) {
+        return Some(tipo);
+    }
+    let text = format!("{} ", descricao?.to_lowercase());
+    let named: Vec<i16> = SECCAO_WORDS
+        .iter()
+        .filter(|(words, _)| words.iter().any(|w| text.contains(w)))
+        .map(|(_, tipo)| *tipo)
+        .collect();
+    match named[..] {
+        [one] => Some(one),
+        _ => None,
+    }
 }
 
 /// Writes the reports' rows for one import and returns their changes. Runs inside the import's
@@ -767,12 +817,29 @@ mod tests {
     }
 
     #[test]
+    fn cargo_seccao_from_sigla_then_descricao() {
+        assert_eq!(cargo_seccao(Some("CALCADJ"), None), Some(1));
+        assert_eq!(cargo_seccao(Some("CC"), Some("Expedição")), Some(4));
+        assert_eq!(
+            cargo_seccao(Some("I"), Some("Instrutor de Alcateia")),
+            Some(1)
+        );
+        assert_eq!(cargo_seccao(Some("I"), Some("2.ª Secção")), Some(2));
+        assert_eq!(cargo_seccao(Some("I"), Some("Clã")), Some(4));
+        // Nothing, or more than one secção named: unknown.
+        assert_eq!(cargo_seccao(Some("SA"), None), None);
+        assert_eq!(cargo_seccao(Some("I"), Some("OS 123")), None);
+        assert_eq!(cargo_seccao(Some("I"), Some("Alcateia e Expedição")), None);
+    }
+
+    #[test]
     fn records_keep_listed_columns_and_allowed_values() {
         let mut f = Fetched::default();
         let cargo = obj(
             json!({"rid": 77, "nin": "1", "agrupamento": "0455", "nome": "X",
-            "email": "x@y.pt", "cargo": "Chefe de Unidade", "siglacargo": "CU", "agrup": "0455",
-            "datainicio": "2020-09-01T00:00:00", "datafim": null, "activo": true}),
+            "email": "x@y.pt", "cargo": "Instrutor", "siglacargo": "I", "agrup": "0455",
+            "datainicio": "2020-09-01T00:00:00", "datafim": null, "activo": true,
+            "descricao": "Instrutor da Expedição, ver OS 12"}),
         );
         f.add_record_row(record_report("member_cargos"), &cargo)
             .unwrap();
@@ -783,6 +850,9 @@ mod tests {
         );
         assert_eq!(c["started_on"], "2020-09-01");
         assert!(!format!("{c:?}").contains("x@y.pt"));
+        // The instrutor's secção is read from the descrição, and the text itself is dropped.
+        assert_eq!(c["seccao_tipo"], 2);
+        assert!(!format!("{c:?}").contains("OS 12"));
 
         // Justiça: awards are kept, anything else is dropped as it is read.
         let distincao = |rid: i64, sigla: &str| {

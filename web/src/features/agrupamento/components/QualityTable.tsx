@@ -1,5 +1,7 @@
 import { formatAgrupamento } from '../../../lib/format'
+import { paths } from '../../../lib/router'
 import { Button } from '../../../ui/Button'
+import { Link } from '../../../ui/Link'
 import { useQualityList } from '../api'
 import type { QualityRow } from '../schema'
 import { CRITERIA } from '../series'
@@ -53,7 +55,9 @@ export function QualityTable() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.code}>
-                <td className="wrap">{formatAgrupamento(r.code, r.name)}</td>
+                <td className="wrap">
+                  <Link to={paths.agrupamento(r.code)}>{formatAgrupamento(r.code, r.name)}</Link>
+                </td>
                 <td className="num">{r.members || '-'}</td>
                 {CRITERIA.map((k) => (
                   <td key={k.key}>

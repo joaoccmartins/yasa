@@ -1,17 +1,19 @@
 import type { CSSProperties } from 'react'
+import { paths } from '../../../lib/router'
+import { Link } from '../../../ui/Link'
 import type { Criteria, YearRow } from '../schema'
-import { CRITERIA, seccaoOf, TIPOS, type Tipo } from '../series'
+import { CRITERIA, seccaoOf, TIPOS } from '../series'
 
 /** One card per secção with this year's count, the change on last year and this year's quality
  * criteria; opens the secção. */
 export function SeccaoCards({
+  code,
   years,
   criteria,
-  onOpen,
 }: {
+  code: number
   years: YearRow[]
   criteria: { tipo: number; years: Criteria[] }[]
-  onOpen: (tipo: Tipo) => void
 }) {
   const current = years.at(-1)
   const previous = years.at(-2)
@@ -25,7 +27,7 @@ export function SeccaoCards({
         const delta = previous ? now - previous[s.key] : null
         const c = criteria.find((c) => c.tipo === tipo)?.years.find((y) => y.year === current.year)
         return (
-          <button key={tipo} className="seccao-card" style={{ '--seccao': s.color } as CSSProperties} onClick={() => onOpen(tipo)}>
+          <Link key={tipo} to={paths.seccao(code, s.key)} className="seccao-card" style={{ '--seccao': s.color } as CSSProperties}>
             <span className="seccao-card-name">{s.label}</span>
             <span className="tile-value">{now}</span>
             <span className="seccao-card-meta">
@@ -37,7 +39,7 @@ export function SeccaoCards({
             </span>
             <CriteriaLines c={c} />
             <span className="seccao-card-go">Ver progresso →</span>
-          </button>
+          </Link>
         )
       })}
     </div>

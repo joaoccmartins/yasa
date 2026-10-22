@@ -1468,7 +1468,7 @@ mod db_tests {
                 "member_cargos",
                 json!({"rid": 9101000001i64, "nin": "TEST91A", "agrupamento": "9101",
                     "cargo": "Chefe", "siglacargo": "CU", "agrup": "9101",
-                    "datainicio": null, "datafim": null, "activo": true}),
+                    "datainicio": null, "datafim": null, "activo": true, "descricao": null}),
             ),
         );
         others.records.insert(

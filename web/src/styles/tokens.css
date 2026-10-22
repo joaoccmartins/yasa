@@ -21,6 +21,12 @@
   --ink-muted: #5d616b;
   --line: #e0e0dc;
   --danger: #b3261e;
+  /* Criteria levels (status, not series): red = something is wrong, yellow = worth a look. They
+     always come with a written label (LevelBadge), never colour alone. */
+  --warning: #c48400;
+  --level-red: var(--danger);
+  --level-yellow: var(--warning);
+  --level-green: #2e7d32;
 
   /* Derived from the palette: nothing below needs editing to re-theme. */
   --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--surface-raised));
@@ -63,6 +69,7 @@
     --ink-muted: #9a9fab;
     --line: #2a2e37;
     --danger: #f2877e;
+    --warning: #e0a32a;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.35);
   }
 }

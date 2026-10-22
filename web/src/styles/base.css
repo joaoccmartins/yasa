@@ -822,11 +822,33 @@ details summary {
   overflow: hidden;
 }
 /* The share flagged by a quality criterion: longer is worse. */
+/* Grey while the criterion is met; the level's colour once it fails. The tick marks the limit. */
+.meter-bar {
+  position: relative;
+}
 .meter-bar span {
   display: block;
   height: 100%;
   border-radius: 2px;
-  background: var(--danger);
+  background: var(--ink-muted);
+}
+.meter[data-failed] .meter-bar span {
+  background: var(--level-red);
+}
+.meter[data-failed][data-level="yellow"] .meter-bar span {
+  background: var(--level-yellow);
+}
+.meter-bar i {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+}
+.meter-fail {
+  color: var(--ink);
+  font-weight: 600;
 }
 /* Counts placed by age, in the years table */
 .table .aged,
@@ -851,10 +873,10 @@ details > .hint {
   grid-template-columns: minmax(140px, 240px) minmax(0, 1fr);
   gap: var(--space-4);
 }
+/* Row heights are set inline from the criteria (CriteriaChart), the same in both columns. */
 .crit-labels,
 .crit-grid {
   display: grid;
-  grid-template-rows: 120px 120px 44px;
   row-gap: var(--space-2);
 }
 .crit-labels > div {
@@ -881,6 +903,8 @@ details > .hint {
   column-gap: var(--space-2);
 }
 .crit-cell {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -900,7 +924,32 @@ details > .hint {
 .crit-bar {
   width: min(56%, 40px);
   border-radius: 4px 4px 0 0;
-  background: var(--danger);
+  background: var(--line);
+}
+.crit-bar[data-failed] {
+  background: var(--level-red);
+}
+.crit-bar[data-failed][data-level="yellow"] {
+  background: var(--level-yellow);
+}
+/* The criterion's limit across the bar's column. */
+.crit-limit {
+  position: absolute;
+  left: 15%;
+  right: 15%;
+  border-top: 2px dashed var(--ink-muted);
+}
+/* A secção criterion broken that year. */
+.crit-mark {
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--level-red);
+  color: var(--surface-raised);
+  font-size: 12px;
+  font-weight: 600;
+}
+.crit-mark[data-level="yellow"] {
+  background: var(--level-yellow);
 }
 .crit-year {
   text-align: center;
@@ -1001,4 +1050,125 @@ details > .hint {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+/* A criterion's level: a coloured dot plus its name, never colour alone. */
+.level {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.level::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--level-red);
+}
+.level[data-level="yellow"]::before {
+  background: var(--level-yellow);
+}
+.crit-flag {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+.level[data-level="green"]::before {
+  background: var(--level-green);
+}
+.points {
+  font-weight: 600;
+  font-size: 14px;
+}
+.points[data-zero] {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.failed-list {
+  display: grid;
+  gap: var(--space-1);
+}
+/* Criteria overlay (native popover): opened from the points. */
+.points-button {
+  justify-self: start;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: 600 13px/1.4 var(--font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.points-button:hover {
+  border-color: var(--ink-muted);
+}
+.points-button[data-zero] {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.overlay {
+  width: min(560px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  margin: auto;
+  padding: var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) * 1.5);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  /* It may sit in a table cell: don't inherit its no-wrap or alignment. */
+  white-space: normal;
+  text-align: left;
+  font-weight: 400;
+}
+.overlay::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+.overlay-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.overlay-head h3 {
+  font-size: 16px;
+}
+.overlay-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+.overlay-list li {
+  display: grid;
+  gap: 2px;
+}
+.overlay-list .sub {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+.overlay-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 14px;
+}
+.overlay-points {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.level-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
 }

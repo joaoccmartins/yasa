@@ -112,7 +112,7 @@ function DigestView({ code, route }: { code: number; route: AgrupamentoRoute }) 
             <SeccaoView key={tipo} code={code} tipo={tipo} />
           ) : (
             <>
-              <SeccaoCards code={code} years={d.years} criteria={d.criteria} />
+              <SeccaoCards code={code} years={d.years} defs={d.criteriaDefs} criteria={d.criteria} />
               <div className="panel digest">
                 <Segmented
                   name="digest-mode"

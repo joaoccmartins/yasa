@@ -1,18 +1,21 @@
 import type { CSSProperties } from 'react'
 import { paths } from '../../../lib/router'
 import { Link } from '../../../ui/Link'
-import type { Criteria, YearRow } from '../schema'
-import { CRITERIA, seccaoOf, TIPOS } from '../series'
+import type { Criteria, Criterion, YearRow } from '../schema'
+import { seccaoOf, TIPOS } from '../series'
+import { CriteriaLines } from './Criteria'
 
 /** One card per secção with this year's count, the change on last year and this year's quality
  * criteria; opens the secção. */
 export function SeccaoCards({
   code,
   years,
+  defs,
   criteria,
 }: {
   code: number
   years: YearRow[]
+  defs: Criterion[]
   criteria: { tipo: number; years: Criteria[] }[]
 }) {
   const current = years.at(-1)
@@ -37,39 +40,11 @@ export function SeccaoCards({
                   ? `igual a ${previous.label}`
                   : `${delta > 0 ? '+' : ''}${delta} face a ${previous.label}`}
             </span>
-            <CriteriaLines c={c} />
+            <CriteriaLines defs={defs} c={c} />
             <span className="seccao-card-go">Ver progresso →</span>
           </Link>
         )
       })}
     </div>
-  )
-}
-
-/** One year's criteria as "Progresso por registar 15 de 21" lines. */
-export function CriteriaLines({ c }: { c: Criteria | undefined }) {
-  if (!c || c.members === 0) return null
-  return (
-    <span className="quality-lines">
-      {CRITERIA.map((k) => (
-        <Meter key={k.key} label={k.label} value={c[k.key]} of={c.members} />
-      ))}
-    </span>
-  )
-}
-
-/** A labelled share of members flagged, as text plus a thin bar (longer is worse). */
-export function Meter({ label, value, of }: { label?: string; value: number; of: number }) {
-  const pct = of === 0 ? 0 : Math.round((value / of) * 100)
-  return (
-    <span className="meter">
-      <span className="meter-text">
-        {label && `${label} `}
-        <b>{value}</b> de {of} <span className="muted">({pct}%)</span>
-      </span>
-      <span className="meter-bar" aria-hidden>
-        <span style={{ width: `${pct}%` }} />
-      </span>
-    </span>
   )
 }

@@ -22,26 +22,48 @@ export const yearRowSchema = z.object({
 })
 export type YearRow = z.infer<typeof yearRowSchema>
 
-// Quality criteria of one secção in one ano escutista: of the members counted in it at the
-// year's end, how many break each one (higher is worse).
-// - progresso: promised, but no adesão concluded in the secção (done, not registered).
-// - promessa: adesão concluded a full year ago, or past aspirante this year, but no promessa date.
+// Quality criteria come from the API (src/criteria.rs), so new ones need no UI change. Each is a
+// condition a secção meets or fails in a year; failing costs its level's points (red 3, yellow 2,
+// green 1), and an agrupamento's points are the sum over its secções: more is worse.
+// scope: 'members' has a number (members of the secção that break a member check) and fails when
+// more than maxShare of the secção do; 'seccao' is about the secção as a whole (1 fails, 0 meets).
+export const levelSchema = z.enum(['green', 'yellow', 'red'])
+export type Level = z.infer<typeof levelSchema>
+export const criterionSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  hint: z.string(),
+  level: levelSchema,
+  points: z.number(),
+  scope: z.enum(['members', 'seccao']),
+  // members scope: the share (0-1) above which the secção fails; null for 'seccao'.
+  maxShare: z.number().nullable(),
+})
+export type Criterion = z.infer<typeof criterionSchema>
+
+// One secção's criteria in one ano escutista: flags[key] per criterion, as above.
 export const criteriaSchema = z.object({
   year: z.number(),
   label: z.string(),
   members: z.number(),
-  progresso: z.number(),
-  promessa: z.number(),
+  flags: z.record(z.string(), z.number()),
+  // The keys of the criteria the secção fails that year, and the points they cost.
+  failed: z.array(z.string()),
+  points: z.number(),
 })
 export type Criteria = z.infer<typeof criteriaSchema>
 
-// This year's criteria, all secções together, for each agrupamento the account holds whole.
-export const qualityRowSchema = criteriaSchema.pick({ members: true, progresso: true, promessa: true }).extend({
+// Each agrupamento the account holds whole, this year: its points (all secções' failed criteria)
+// and which criterion each secção fails.
+export const qualityRowSchema = z.object({
   code: z.number(),
   name: z.string().nullable(),
+  members: z.number(),
+  points: z.number(),
+  failed: z.array(z.object({ tipo: z.number(), key: z.string() })),
 })
 export type QualityRow = z.infer<typeof qualityRowSchema>
-export const qualityListSchema = z.array(qualityRowSchema)
+export const qualityListSchema = z.object({ defs: z.array(criterionSchema), rows: z.array(qualityRowSchema) })
 
 export const digestSchema = z.object({
   // From the SIIE agrupamentos list; null until an import has read it. Dates are YYYY-MM-DD.
@@ -72,6 +94,7 @@ export const digestSchema = z.object({
   // Former members with no date at all in SIIE (old records): not in any year.
   undated: z.number(),
   // Per secção (tipo 1 Lobitos ... 4 Caminheiros), the years it had members, oldest first.
+  criteriaDefs: z.array(criterionSchema),
   criteria: z.array(z.object({ tipo: z.number(), years: z.array(criteriaSchema) })),
   // Unix seconds of the latest finished import; null = never imported.
   lastImportAt: z.number().nullable(),
@@ -122,6 +145,7 @@ export const seccaoSchema = z.object({
   scouts: z.array(scoutSchema),
   adults: z.array(adultSchema),
   // This secção's criteria per year, oldest first.
+  criteriaDefs: z.array(criterionSchema),
   criteria: z.array(criteriaSchema),
 })
 export type SeccaoDetail = z.infer<typeof seccaoSchema>

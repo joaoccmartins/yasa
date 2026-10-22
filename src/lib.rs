@@ -3,6 +3,7 @@
 pub mod access;
 pub mod admin;
 pub mod auth;
+pub mod criteria;
 pub mod digest;
 pub mod member_reports;
 pub mod members;

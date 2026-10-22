@@ -3,12 +3,11 @@ import { paths } from '../../../lib/router'
 import { Button } from '../../../ui/Button'
 import { Link } from '../../../ui/Link'
 import { useQualityList } from '../api'
-import type { QualityRow } from '../schema'
-import { CRITERIA } from '../series'
-import { Meter } from './SeccaoCards'
+import { seccaoOf } from '../series'
+import { CriteriaOverlay } from './Criteria'
 
-/** This year's quality criteria of every agrupamento the account holds whole, worst first, to spot
- * the ones not keeping SIIE up to date. */
+/** Every agrupamento the account holds whole, ranked from worst to best by this year's quality
+ * points, with the criteria each secção doesn't meet. */
 export function QualityTable() {
   const list = useQualityList()
   if (list.isPending) {
@@ -27,16 +26,20 @@ export function QualityTable() {
       </div>
     )
   }
-  // Most flagged (both criteria, as a share of members) first; agrupamentos with no members this
-  // year (not imported, or defunct) at the end.
-  const share = (r: QualityRow) => (r.members === 0 ? -1 : (r.progresso + r.promessa) / r.members)
-  const rows = [...list.data].sort((a, b) => share(b) - share(a) || a.code - b.code)
+  const { defs, rows } = list.data
+  const levelOf = new Map(defs.map((k) => [k.key, k.level]))
+  // Worst first: most points; agrupamentos with no members this year (not imported, or defunct)
+  // at the end.
+  const sorted = [...rows].sort(
+    (a, b) => Number(b.members > 0) - Number(a.members > 0) || b.points - a.points || a.code - b.code,
+  )
   return (
     <section className="page-section" aria-labelledby="quality-title">
       <div>
         <h2 id="quality-title">Critérios de qualidade</h2>
         <p className="hint">
-          Por agrupamento, este ano escutista: quantos elementos das secções falham cada critério. Os piores primeiro.
+          Por agrupamento, este ano escutista: cada critério que uma secção não cumpre custa pontos (vermelho 3, amarelo
+          2). Do pior para o melhor.
         </p>
       </div>
       <div className="table-wrap">
@@ -44,26 +47,46 @@ export function QualityTable() {
           <thead>
             <tr>
               <th>Agrupamento</th>
+              <th>Pontos</th>
+              <th>Por cumprir</th>
               <th className="num">Elementos</th>
-              {CRITERIA.map((k) => (
-                <th key={k.key} title={k.hint}>
-                  {k.label}
-                </th>
-              ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {sorted.map((r) => (
               <tr key={r.code}>
                 <td className="wrap">
                   <Link to={paths.agrupamento(r.code)}>{formatAgrupamento(r.code, r.name)}</Link>
                 </td>
+                <td>
+                  {r.members > 0 ? (
+                    <CriteriaOverlay
+                      id={`criteria-${r.code}`}
+                      title={`${formatAgrupamento(r.code, r.name)}: critérios por cumprir`}
+                      defs={defs}
+                      failed={r.failed.map((f) => ({ key: f.key, seccao: seccaoOf(f.tipo).label }))}
+                      points={r.points}
+                    />
+                  ) : (
+                    <span className="muted">Sem elementos</span>
+                  )}
+                </td>
+                <td>
+                  {/* How many of each level; the overlay (the points) lists them. */}
+                  <span className="level-counts">
+                    {r.members > 0 &&
+                      (['red', 'yellow'] as const)
+                        .map((level) => [level, r.failed.filter((f) => levelOf.get(f.key) === level).length] as const)
+                        .filter(([, n]) => n > 0)
+                        .map(([level, n]) => (
+                          <span key={level} className="level" data-level={level}>
+                            {n}{' '}
+                            {level === 'red' ? (n === 1 ? 'vermelho' : 'vermelhos') : n === 1 ? 'amarelo' : 'amarelos'}
+                          </span>
+                        ))}
+                  </span>
+                </td>
                 <td className="num">{r.members || '-'}</td>
-                {CRITERIA.map((k) => (
-                  <td key={k.key}>
-                    {r.members > 0 ? <Meter value={r[k.key]} of={r.members} /> : <span className="muted">Sem elementos</span>}
-                  </td>
-                ))}
               </tr>
             ))}
           </tbody>

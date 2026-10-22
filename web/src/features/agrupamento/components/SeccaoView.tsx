@@ -8,7 +8,7 @@ import { useSeccao } from '../api'
 import type { Adult, Scout, SeccaoDetail } from '../schema'
 import { ETAPAS, seccaoOf, STEP_KINDS, SUBUNIDADES, type Tipo } from '../series'
 import { CriteriaChart } from './CriteriaChart'
-import { CriteriaLines } from './SeccaoCards'
+import { CriteriaLines, CriteriaOverlay } from './Criteria'
 
 const oneDecimal = new Intl.NumberFormat('pt-PT', { maximumFractionDigits: 1 })
 
@@ -62,7 +62,16 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
         <h2>
           {s.label} em {d.yearLabel}
         </h2>
-        <CriteriaLines c={now} />
+        {now && (
+          <CriteriaOverlay
+            id={`criteria-seccao-${tipo}`}
+            title={`${s.label} em ${d.yearLabel}: critérios por cumprir`}
+            defs={d.criteriaDefs}
+            failed={now.failed.map((key) => ({ key }))}
+            points={now.points}
+          />
+        )}
+        <CriteriaLines defs={d.criteriaDefs} c={now} points={false} />
         <div className="tiles">
           <Tile label="Etapas alcançadas este ano" value={stepsThisYear} />
           <Tile label="Promessas este ano" value={promessas} />
@@ -70,7 +79,7 @@ export function SeccaoView({ code, tipo }: { code: number; tipo: Tipo }) {
         </div>
       </div>
       <Board code={code} d={d} names={ETAPAS[tipo]} thisYear={thisYear} />
-      <CriteriaChart years={d.criteria} />
+      <CriteriaChart defs={d.criteriaDefs} years={d.criteria} />
       <EspecialidadesTable scouts={d.scouts} thisYear={thisYear} />
     </div>
   )

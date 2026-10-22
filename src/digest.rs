@@ -10,7 +10,7 @@
 //!   always add up to the total. Dated records decide it first; where there are none, their age
 //!   does, and that count is reported apart (`by_age`) so the page can mark it as estimated.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use axum::{
     Json,
@@ -26,6 +26,7 @@ use secrecy::ExposeSecret;
 use crate::{
     AppState,
     auth::{ApiError, CurrentAccount, db_error, keyed_hash},
+    criteria::{self, InstrutorSpan},
 };
 
 /// Where a member is counted in one year.
@@ -45,7 +46,7 @@ pub enum Bucket {
 /// The four secções: tipo (as in `seccoes` and the especialidades reports), bucket, the prefix of
 /// their member_progress columns and their promessa column. Arrays in `MemberDates` follow this
 /// order.
-const SECCOES: [(i16, Bucket, &str, &str); 4] = [
+pub(crate) const SECCOES: [(i16, Bucket, &str, &str); 4] = [
     (1, Bucket::Lobitos, "l", "promessalobito"),
     (2, Bucket::Exploradores, "e", "promessaexplorador"),
     (3, Bucket::Pioneiros, "p", "promessapioneiro"),
@@ -128,23 +129,6 @@ pub struct YearRow {
     pub dirigentes: u32,
     pub sem_registo: u32,
     pub by_age: ByAge,
-}
-
-/// Quality criteria of one secção in one ano escutista: flags of how well the agrupamento keeps
-/// SIIE up to date. Of the members counted in the secção at the year's end, how many break each
-/// criterion (higher is worse).
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Criteria {
-    pub year: i32,
-    pub label: String,
-    pub members: u32,
-    /// Progresso por registar: promised, but no adesão concluded in the secção. The promessa comes
-    /// after concluding the adesão, so it was done and not registered.
-    pub progresso: u32,
-    /// Promessa por registar: adesão concluded (a full ano escutista ago), or past aspirante this
-    /// year, but no promessa registered.
-    pub promessa: u32,
 }
 
 /// The ano escutista a `YYYY-MM-DD` date falls in: October onwards starts a new one.
@@ -267,7 +251,7 @@ fn fits(b: Bucket, age: i32) -> bool {
 }
 
 /// The `i`th date of `v` if it is on or before `end`.
-fn dated_at<'a>(v: &'a [Option<String>], i: usize, end: &str) -> Option<&'a str> {
+pub(crate) fn dated_at<'a>(v: &'a [Option<String>], i: usize, end: &str) -> Option<&'a str> {
     v.get(i).and_then(|d| on_or_before(d, end))
 }
 
@@ -341,60 +325,8 @@ pub fn digest(members: &[MemberDates], today: &str) -> Vec<YearRow> {
 }
 
 /// "2024/25"
-fn year_label(year: i32) -> String {
+pub(crate) fn year_label(year: i32) -> String {
     format!("{year}/{:02}", (year + 1) % 100)
-}
-
-/// The quality criteria per secção (SECCOES order) and ano escutista, oldest first, for the years
-/// the secção had members. Each member is checked in the secção they're counted in that year.
-/// The promessa is made once, in the secção the member joined (an explorador who promised as a
-/// lobito only has the Lobitos date; SIIE's promessa dates match dados completos' Dt. Promessa,
-/// checked 2026-10-22), so a promessa in any secção counts as made.
-pub fn criteria(members: &[MemberDates], today: &str) -> Vec<Vec<Criteria>> {
-    let current = scout_year(today);
-    let mut per: Vec<BTreeMap<i32, Criteria>> = vec![BTreeMap::new(); SECCOES.len()];
-    for m in members {
-        let years = member_years(m, today);
-        // This year, past aspirante means the promessa was made, dated or not.
-        let aspirante = m
-            .categoria
-            .as_deref()
-            .is_some_and(|c| c.to_lowercase().contains("aspirante"));
-        for (k, &(y, b, _)) in years.iter().enumerate() {
-            let Some(i) = SECCOES.iter().position(|s| s.1 == b) else {
-                continue; // Dirigentes and Sem registo have no progresso.
-            };
-            let year_start = format!("{y}-10-01");
-            let year_end = format!("{}-09-30", y + 1);
-            let c = per[i].entry(y).or_insert_with(|| Criteria {
-                year: y,
-                label: year_label(y),
-                ..Default::default()
-            });
-            c.members += 1;
-
-            let promessa_dated =
-                (0..SECCOES.len()).any(|j| dated_at(&m.promessas, j, &year_end).is_some());
-            let promised = promessa_dated || (y == current && m.active && !aspirante);
-            // Any stage registered in this secção by the year's end.
-            let registered = dated_at(&m.first_steps, i, &year_end);
-            // Progresso por registar: promised, but no stage at all in the secção. A member who
-            // promised in an earlier secção starts this one in Adesão with nothing to register
-            // yet, so they're only flagged from their second year in it.
-            let settled =
-                dated_at(&m.promessas, i, &year_end).is_some() || (k > 0 && years[k - 1].1 == b);
-            if promised && registered.is_none() && settled {
-                c.progresso += 1;
-            }
-            // Promessa por registar: in the progresso for a full ano escutista, or already past
-            // aspirante this year, but no promessa date.
-            let due = registered.is_some_and(|d| d < year_start.as_str()) || promised;
-            if due && !promessa_dated {
-                c.promessa += 1;
-            }
-        }
-    }
-    per.into_iter().map(|t| t.into_values().collect()).collect()
 }
 
 /// Every member ever seen in these agrupamentos, present or not, with the dates `member_years`
@@ -457,6 +389,26 @@ pub async fn load(db: &sqlx::PgPool, codes: &[i16]) -> Result<Vec<MemberDates>, 
     .await
 }
 
+/// The instrutor cargos of these agrupamentos whose secção is known, for the criteria. An ended
+/// cargo with no end date is taken to have held only where it started.
+async fn instrutor_spans(
+    db: &sqlx::PgPool,
+    codes: &[i16],
+) -> Result<Vec<InstrutorSpan>, sqlx::Error> {
+    sqlx::query_as(
+        "select agrupamento, seccao_tipo as tipo, started_on::text as \"from\",
+                case when ended_on is not null then ended_on::text
+                     when active then null
+                     else started_on::text end as \"to\"
+         from member_cargos
+         where agrupamento = any($1) and sigla_cargo = 'I' and seccao_tipo is not null
+           and started_on is not null",
+    )
+    .bind(codes)
+    .fetch_all(db)
+    .await
+}
+
 /// Today's date from the database, so every request uses the same clock.
 async fn today(db: &sqlx::PgPool) -> Result<String, ApiError> {
     let (today,): (String,) = sqlx::query_as("select current_date::text")
@@ -474,7 +426,7 @@ fn not_whole() -> ApiError {
 }
 
 /// GET /api/agrupamentos/{code}/digest: members per ano escutista, in total and per secção, the
-/// progresso quality this year, and the agrupamento's own data. Needs a whole-agrupamento grant:
+/// quality criteria per secção and year, and the agrupamento's own data. Needs a whole-agrupamento grant:
 /// secção-only readers have no import of their agrupamento, so there's nothing to count for them.
 pub async fn get(
     State(s): State<AppState>,
@@ -488,6 +440,7 @@ pub async fn get(
         .ok_or_else(not_whole)?;
     let today = today(db).await?;
     let members = load(db, &[code]).await.map_err(db_error)?;
+    let spans = instrutor_spans(db, &[code]).await.map_err(db_error)?;
     let (last_import_at,): (Option<i64>,) = sqlx::query_as(
         "select extract(epoch from max(finished_at))::bigint from member_imports
          where agrupamento = $1 and status = 'done'",
@@ -501,9 +454,10 @@ pub async fn get(
     Ok(Json(json!({
         "agrupamento": agrupamento,
         "years": digest(&members, &today),
+        "criteriaDefs": criteria::definitions(),
         "criteria": SECCOES
             .iter()
-            .zip(criteria(&members, &today))
+            .zip(criteria::evaluate(&members, &spans, &today))
             .map(|(s, years)| json!({"tipo": s.0, "years": years}))
             .collect::<Vec<_>>(),
         "undated": undated,
@@ -511,8 +465,9 @@ pub async fn get(
     })))
 }
 
-/// GET /api/agrupamentos/quality: this year's quality criteria of every agrupamento the account
-/// holds whole, all secções together, to compare them.
+/// GET /api/agrupamentos/quality: every agrupamento the account holds whole, with this year's
+/// quality points (the sum of the points of every criterion each of its secções fails) and which
+/// those are, to rank them from worst to best.
 pub async fn quality_list(
     State(s): State<AppState>,
     acc: CurrentAccount,
@@ -535,27 +490,50 @@ pub async fn quality_list(
             .or_default()
             .push(m);
     }
+    let spans = instrutor_spans(db, &codes).await.map_err(db_error)?;
     let current = scout_year(&today);
     let rows: Vec<Value> = agrupamentos
         .into_iter()
         .map(|(code, name)| {
-            let all = criteria(by_code.get(&code).map_or(&[][..], Vec::as_slice), &today);
-            // This year's column of each secção, added up.
-            let now: Vec<&Criteria> = all
+            let own: Vec<InstrutorSpan> = spans
                 .iter()
-                .filter_map(|years| years.last().filter(|c| c.year == current))
+                .filter(|s| s.agrupamento == code)
+                .cloned()
                 .collect();
-            let sum = |f: fn(&Criteria) -> u32| now.iter().map(|c| f(c)).sum::<u32>();
+            let all = criteria::evaluate(
+                by_code.get(&code).map_or(&[][..], Vec::as_slice),
+                &own,
+                &today,
+            );
+            // This year's column of each secção: what it fails, and the points that costs.
+            let now: Vec<(i16, &criteria::CriteriaYear)> = SECCOES
+                .iter()
+                .zip(&all)
+                .filter_map(|(sec, years)| {
+                    years
+                        .last()
+                        .filter(|c| c.year == current)
+                        .map(|c| (sec.0, c))
+                })
+                .collect();
+            let failed: Vec<Value> = now
+                .iter()
+                .flat_map(|(tipo, c)| {
+                    c.failed
+                        .iter()
+                        .map(move |key| json!({"tipo": tipo, "key": key}))
+                })
+                .collect();
             json!({
                 "code": code,
                 "name": name,
-                "members": sum(|c| c.members),
-                "progresso": sum(|c| c.progresso),
-                "promessa": sum(|c| c.promessa),
+                "members": now.iter().map(|(_, c)| c.members).sum::<u32>(),
+                "points": now.iter().map(|(_, c)| c.points).sum::<u32>(),
+                "failed": failed,
             })
         })
         .collect();
-    Ok(Json(Value::Array(rows)))
+    Ok(Json(json!({"defs": criteria::definitions(), "rows": rows})))
 }
 
 /// One scout of a secção, as the secção view shows them.
@@ -624,6 +602,7 @@ pub async fn seccao(
         .ok_or_else(not_whole)?;
     let today = today(db).await?;
     let members = load(db, &[code]).await.map_err(db_error)?;
+    let spans = instrutor_spans(db, &[code]).await.map_err(db_error)?;
     let nins = current_members(&members, target, &today);
 
     // Column names come from SECCOES / STEPS, never from the request.
@@ -678,7 +657,8 @@ pub async fn seccao(
         "subunidades": subunidades,
         "scouts": scouts,
         "adults": adults,
-        "criteria": criteria(&members, &today).swap_remove(i),
+        "criteriaDefs": criteria::definitions(),
+        "criteria": criteria::evaluate(&members, &spans, &today).swap_remove(i),
     })))
 }
 
@@ -728,7 +708,7 @@ async fn seccao_adults(db: &sqlx::PgPool, code: i16, tipo: i16) -> Result<Vec<Ad
 /// the Alcateia), and agrupamentos aim for about 6 each.
 const SUBUNIDADE_MAX: u32 = 8;
 const SUBUNIDADE_TARGET: f64 = 6.0;
-fn subunidade_min(tipo: i16) -> u32 {
+pub(crate) fn subunidade_min(tipo: i16) -> u32 {
     if tipo == 1 { 5 } else { 4 }
 }
 
@@ -1235,57 +1215,6 @@ mod tests {
         }
         assert!(digest(&[], TODAY).is_empty());
     }
-
-    #[test]
-    fn criteria_flag_missing_progresso_and_promessa() {
-        // Lobitos since 2024/25 (by age: born 2017), this year all past aspirante.
-        let lobito = |adesao: Option<&str>, promessa: Option<&str>, categoria: &str| MemberDates {
-            admitted_on: d("2024-10-15"),
-            birth_month: d("2017-01-01"),
-            seccao: d("Lobitos"),
-            categoria: d(categoria),
-            first_steps: per_seccao(adesao, None, None, None),
-            promessas: per_seccao(promessa, None, None, None),
-            ..member()
-        };
-        let all = [
-            // All registered: no flag.
-            lobito(Some("2024-12-01"), Some("2025-05-01"), "Lobito"),
-            // Promised (by categoria) with nothing registered: both flags this year.
-            lobito(None, None, "Lobito"),
-            // Promessa registered, adesão not: progresso flag, in both years.
-            lobito(None, Some("2025-05-01"), "Lobito"),
-            // Adesão concluded in 2024/25, no promessa yet and still aspirante: promessa flag
-            // from 2025/26, the first full ano escutista after the adesão.
-            lobito(Some("2025-06-01"), None, "Aspirante a Lobito"),
-        ];
-        let lob = &criteria(&all, TODAY)[0];
-        let years: Vec<(i32, u32, u32, u32)> = lob
-            .iter()
-            .map(|c| (c.year, c.members, c.progresso, c.promessa))
-            .collect();
-        assert_eq!(
-            years,
-            vec![(2024, 4, 1, 0), (2025, 4, 1, 1), (2026, 4, 2, 2)]
-        );
-        assert!(criteria(&all, TODAY)[1].is_empty());
-
-        // An explorador who promised as a lobito and just moved up isn't flagged this year.
-        let moved = MemberDates {
-            admitted_on: d("2022-10-01"),
-            birth_month: d("2016-01-01"),
-            seccao: d("Exploradores"),
-            categoria: d("Explorador"),
-            first_steps: per_seccao(Some("2023-01-01"), None, None, None),
-            promessas: per_seccao(Some("2023-05-01"), None, None, None),
-            ..member()
-        };
-        let exp = &criteria(&[moved], TODAY)[1];
-        assert_eq!(
-            (exp[0].year, exp[0].progresso, exp[0].promessa),
-            (2026, 0, 0)
-        );
-    }
 }
 
 /// Database test: run against DATABASE_URL with `cargo test -- --ignored`. Uses agrupamentos
@@ -1453,7 +1382,7 @@ mod db_tests {
 
         // Adesão concluded, explorador past aspirante with no promessa: flagged this year.
         assert_eq!(
-            v["criteria"].as_array().unwrap().last().unwrap()["promessa"],
+            v["criteria"].as_array().unwrap().last().unwrap()["flags"]["promessa"],
             1
         );
 
@@ -1461,11 +1390,23 @@ mod db_tests {
         let Json(list) = quality_list(State(state.clone()), acc())
             .await
             .unwrap_or_else(|e| panic!("{}", e.1));
-        let list = list.as_array().unwrap();
-        assert_eq!(list.len(), 1);
         assert_eq!(
-            (list[0]["code"].as_i64(), list[0]["members"].as_u64()),
+            list["defs"].as_array().unwrap().len(),
+            criteria::CRITERIA.len()
+        );
+        let rows = list["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0]["code"].as_i64(), rows[0]["members"].as_u64()),
             (Some(9201), Some(1))
+        );
+        // One explorador this year, past aspirante with no promessa date (red, 3), below the
+        // minimum (red, 3) and no instrutor for its sub-unidade (yellow, 2).
+        assert_eq!(rows[0]["points"], 8);
+        assert_eq!(
+            rows[0]["failed"],
+            json!([{"tipo": 2, "key": "promessa"}, {"tipo": 2, "key": "minimo"},
+                   {"tipo": 2, "key": "instrutores"}])
         );
 
         cleanup(db).await;

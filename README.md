@@ -268,17 +268,24 @@ only, never a member. Rules, all rebuilt from each member's dates on every reque
      on 2026-10-22. These are estimates: the digest returns them apart (`byAge`), and the chart
      marks those years with hollow points.
   6. Otherwise **Sem registo**. The secções always add up to the total.
-- **Quality criteria**, flags of how well an agrupamento keeps SIIE up to date, per secção and
-  ano escutista (bar charts on each secção tab, the last 5 years in view and older ones a scroll
-  away; this year on the secção cards and, per
-  agrupamento, on the Painel via `GET /api/agrupamentos/quality`). Of the members counted in the
-  secção that year:
-  - **Progresso por registar**: promised (a promessa date, or this year past aspirante) but no
-    step at all registered in the secção (SIIE often holds a later etapa without the adesão). A member who promised in an earlier secção is only checked
-    from their second year in the new one.
-  - **Promessa por registar**: a step registered in the secção before the year began (a full
-    year to promise), or past aspirante this year, but no promessa date. The promessa is made once, in the secção
-    the member joined, so any secção's promessa counts.
+- **Quality criteria** live in [src/criteria.rs](src/criteria.rs) as data: each one is a key, a
+  label, an explanation, a **level** and a check. The API sends their definitions with the
+  results, so the page shows whatever the list holds, which leaves room for user-defined
+  criteria later. Each is a **condition** a secção meets or fails in a year:
+  - **member** criteria have a number (members of the secção that break a member check, shown in
+    the secção view) and fail when more than `max_share` of the secção does;
+  - **secção** criteria are about the secção as a whole.
+
+  Every criterion a secção fails costs its level's points: red 3, yellow 2 (green 1, none yet).
+  An agrupamento's points are the sum over its secções; the Painel ranks them from most points
+  (worst) to fewest (`GET /api/agrupamentos/quality`), with an overlay listing what each fails.
+
+  | Criterion | Level | Fails when |
+  | --- | --- | --- |
+  | Progresso por registar | yellow | more than 70% of the secção promised (a promessa date, or past aspirante this year) but has no step registered there (70% to be confirmed) |
+  | Promessa por registar | red | more than 70% of the secção has had a step registered for a full ano escutista, or is past aspirante this year, with no promessa date |
+  | Abaixo do mínimo | red | fewer members than one sub-unidade needs: 5 lobitos, 4 otherwise |
+  | Instrutores insuficientes | yellow | fewer instrutores (instrutor cargos in the secção during the year) than estimated sub-unidades |
 
 The page has a Resumo tab (secção cards with this year's count and the change on last year, the
 chart) and one tab per secção, from `GET /api/agrupamentos/{code}/seccoes/{tipo}` (tipo 1

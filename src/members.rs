@@ -78,6 +78,10 @@ const ESPECIALIDADES_REPORTS: [(&str, i16); 4] = [
     ("elementos/especialidades/lista-caminheiros", 4),
 ];
 const ESPECIALIDADE_KEYS: [&str; 3] = [NIN, "especialidade", "datarealizacao"];
+// Reports broken on SIIE's side ("Ocorreu um erro de SQL" in SIIE's own page too, confirmed by
+// the user on 2026-10-22). Still read on every import, so they come back once SIIE fixes them,
+// but their failure isn't shown as an import warning: their data just stays as it was.
+const KNOWN_SIIE_FAULTS: &[&str] = &["elementos/especialidades/lista-caminheiros"];
 // Prefix of member_especialidades changes: "especialidade.<seccao_tipo>.<name>", old/new = date.
 const ESPECIALIDADE_FIELD_PREFIX: &str = "especialidade.";
 // Message stored on imports whose run died with its function (see STALE_RUN_MINUTES).
@@ -260,21 +264,20 @@ type Especialidades = BTreeMap<EspecialidadeKey, Option<String>>;
 
 /// Adds one especialidades row to `into`. If SIIE lists the same one twice, the earliest date
 /// wins (one row per member, secção and especialidade).
+/// Adds one row of an especialidades report. Returns whether the row had the especialidade
+/// columns: SIIE sends some rows without them (seen 2026-10-22 in lista-pioneiros, for some
+/// agrupamentos), and such a row has no especialidade to read, so it's skipped. The caller fails
+/// the report only if no row at all has them (a renamed column), see `ESPECIALIDADE_KEYS`.
 fn parse_especialidade(
     row: &Map<String, Value>,
     seccao_tipo: i16,
     into: &mut Especialidades,
-) -> Result<(), SiieError> {
-    let missing: Vec<&str> = ESPECIALIDADE_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !row.contains_key(*k))
-        .collect();
-    if !missing.is_empty() {
-        return Err(SiieError::MemberFieldMissing(missing.join(", ")));
+) -> Result<bool, SiieError> {
+    if ESPECIALIDADE_KEYS.iter().any(|k| !row.contains_key(*k)) {
+        return Ok(false);
     }
     let Some(name) = text(row, "especialidade") else {
-        return Ok(()); // a row without a name says nothing
+        return Ok(true); // a row without a name says nothing
     };
     let on = date(row, "datarealizacao")?;
     let slot = into
@@ -283,7 +286,7 @@ fn parse_especialidade(
     if slot.is_none() || on.is_some() && on < *slot {
         *slot = on;
     }
-    Ok(())
+    Ok(true)
 }
 
 #[rustfmt::skip]
@@ -611,15 +614,30 @@ async fn import_one(
     let mut especialidades = Especialidades::new();
     let mut especialidades_read = Vec::new();
     for (report, tipo) in &reports.especialidades {
+        let path = ESPECIALIDADES_REPORTS
+            .iter()
+            .find(|(_, t)| t == tipo)
+            .map_or("", |(p, _)| *p);
         // Read into its own set, so a report failing halfway leaves nothing behind.
         let mut found = Especialidades::new();
+        let mut with_columns = 0u64;
         let read = siie::for_each_row(client, token, report, Some(&filter), |row| {
-            parse_especialidade(row, *tipo, &mut found)
+            with_columns += u64::from(parse_especialidade(row, *tipo, &mut found)?);
+            Ok(())
         });
         match read.await {
+            // Rows, but none with the especialidade columns: SIIE renamed them. Fail loudly
+            // instead of storing nothing.
+            Ok(rows) if rows > 0 && with_columns == 0 => {
+                let missing = SiieError::MemberFieldMissing(ESPECIALIDADE_KEYS.join(", "));
+                warnings.push(format!("{path}: {missing}"));
+            }
             Ok(_) => {
                 especialidades.append(&mut found);
                 especialidades_read.push(*tipo);
+            }
+            Err(e) if KNOWN_SIIE_FAULTS.contains(&path) => {
+                eprintln!("members: {path} still broken in SIIE: {e}");
             }
             Err(e) => warnings.push(e.to_string()),
         }
@@ -1039,8 +1057,11 @@ pub(crate) mod tests {
         for on in ["2019-01-01T00:00:00", "2018-06-16T00:00:00"] {
             let r =
                 json!({"nin": "1", "nome": "X", "especialidade": "Canoísta", "datarealizacao": on});
-            parse_especialidade(r.as_object().unwrap(), 2, &mut into).unwrap();
+            assert!(parse_especialidade(r.as_object().unwrap(), 2, &mut into).unwrap());
         }
+        // A row without the especialidade columns is skipped, not an error.
+        let r = json!({"nin": "2", "nome": "Y"});
+        assert!(!parse_especialidade(r.as_object().unwrap(), 2, &mut into).unwrap());
         assert_eq!(
             into.into_iter().collect::<Vec<_>>(),
             vec![(
